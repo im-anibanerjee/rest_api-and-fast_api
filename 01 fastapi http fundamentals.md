@@ -182,6 +182,47 @@ body: {
 
 Identical result both times — the balance is just "set to 9999.0" again. That's idempotency: PUT means "make the resource look like this", and doing that twice leaves it looking the same as doing it once.
 
+**Flow diagram — why the two methods leave the world in different states:**
+
+```
+POST /accounts {"holder": "Dev Patel", "balance": 1200.0}   -- called TWICE, same body
+
+Call 1:
+    accounts BEFORE                    accounts AFTER
+    ┌──────────────────────┐           ┌──────────────────────┐
+    │ 1: Ravi Kumar         │           │ 1: Ravi Kumar         │
+    │ 2: Priya Shah         │    -->    │ 2: Priya Shah         │
+    └──────────────────────┘           │ 3: Dev Patel  (NEW)   │
+    next_id = 3                        └──────────────────────┘
+                                        next_id = 4   (bumped)
+
+Call 2 (identical body):
+    accounts BEFORE                    accounts AFTER
+    ┌──────────────────────┐           ┌──────────────────────┐
+    │ 1: Ravi Kumar         │           │ 1: Ravi Kumar         │
+    │ 2: Priya Shah         │    -->    │ 2: Priya Shah         │
+    │ 3: Dev Patel          │           │ 3: Dev Patel          │
+    └──────────────────────┘           │ 4: Dev Patel  (NEW, again) │
+    next_id = 4                        └──────────────────────┘
+                                        next_id = 5
+
+POST reads next_id, creates a brand-new entry at that id, and bumps the
+counter — every call changes the state DIFFERENTLY, even with
+byte-identical input. That's non-idempotency, mechanically.
+
+----------------------------------------------------------------------
+
+PUT /accounts/1 {"balance": 9999.0}   -- called TWICE, same body
+
+Call 1:  accounts[1].balance   5000.0  -->  9999.0
+Call 2:  accounts[1].balance   9999.0  -->  9999.0   (overwritten with itself)
+
+PUT doesn't read a counter or add anything — it just overwrites
+accounts[1]["balance"] with exactly what the body says. Overwriting a
+value with itself leaves the world looking identical to calling it
+once. That's idempotency, mechanically.
+```
+
 ## 4. Status codes: what they actually tell the caller
 
 Status codes are a 3-digit number whose **first digit is the category**:
@@ -254,6 +295,32 @@ body: {
 ```
 The 401 vs 403 distinction trips people up constantly, so lock in this phrasing: **401 = "I don't know who you are."** **403 = "I know who you are, and the answer is no."** A request with zero credentials is always 401, never 403. A request with valid-but-insufficient credentials (wrong role, wrong key, expired-but-recognizable token depending on your design) is 403. This demo uses a single hardcoded API key only to isolate the concept — real auth (login, tokens, roles) is doc 09.
 
+**Flow diagram — the actual decision tree `secure_list()` runs on every call:**
+
+```
+GET /secure-accounts
+
+              Is there an X-API-Key header at all?
+                          │
+          ┌────────────── NO ───────────────┐
+          │                                   │
+         YES                            401 Unauthorized
+          │                      "I don't know who you are"
+          ▼                        (no identity presented at all)
+   Does the key equal "secret-admin-key"?
+          │
+   ┌───── NO ──────┐
+   │                 │
+  YES          403 Forbidden
+   │       "I know who you are, and
+   ▼        the answer is still no"
+200 OK         (a real, recognized,
+(key matches,   but insufficient key)
+ access granted)
+```
+
+The two checks run in a fixed order — "do you exist" before "are you allowed" — which is why a request with NO key can never accidentally land on 403, and a request with a WRONG key can never accidentally land on 401. Get this order backwards in your own code later and you'll leak information about which usernames/keys are even real.
+
 **404 Not Found** — the resource you asked for doesn't exist:
 ```
 --- GET /accounts/999 (404) ---
@@ -293,6 +360,35 @@ body: {
 ```
 Notice: we never wrote a single line of code to produce this. FastAPI validated the incoming JSON against `AccountIn` *before* `create_account()` ran at all, and rejected it automatically. `loc` tells you exactly where the problem is (`body` → `balance`), which is exactly what the frontend needs to show a useful "this field is required" message next to the right form input. This is the payoff of doc 02 (Pydantic) — you get this for free just by declaring a type.
 
+**Flow diagram — the exact order of operations, and why `create_account()`'s own code never runs:**
+
+```
+POST /accounts   body: {"holder": "No Balance Field"}        <- "balance" missing
+
+Step 1: FastAPI receives the raw bytes and parses them as JSON.
+Step 2: FastAPI inspects create_account()'s signature and sees it
+        declares one parameter: account: AccountIn.
+Step 3: FastAPI hands the parsed JSON to AccountIn for validation -
+        this happens BEFORE create_account()'s body executes a
+        single line.
+Step 4: AccountIn requires "holder" (str) and "balance" (float).
+        "holder" is present and correctly typed. "balance" is
+        missing entirely.
+Step 5: Validation FAILS right here, inside FastAPI's own machinery.
+        A 422 response is built, describing exactly which field
+        failed and why, and sent back immediately.
+Step 6: create_account()'s own code --
+            global next_id
+            new_account = {...}
+            accounts[next_id] = new_account
+            next_id += 1
+        -- NEVER RUNS. The function body is not reached at all.
+
+This is why a 422 can never corrupt your data: if the shape of the
+request is wrong, the part of your route that actually touches
+accounts/the database doesn't get a chance to run in the first place.
+```
+
 **500 Internal Server Error** — the server itself crashed on an exception nobody caught:
 ```
 --- GET /boom (500) ---
@@ -329,13 +425,41 @@ What this demo does *not* yet show, on purpose, because they need their own docs
 
 Your real frontend (React/Node) talks to your real FastAPI backend using exactly this mechanism — `fetch`/`axios` calls that are GET/POST/PUT/DELETE requests to specific URLs, and your backend routes handle them with functions that look structurally identical to the ones in this demo (just backed by PostgreSQL instead of a dict, which is doc 06). When you're reading an existing route in your office codebase and see `@router.post("/something", status_code=201)`, you now know precisely what every piece of that means: it's registering a non-idempotent, non-safe handler for creating something, and 201 is the convention for "created successfully, here's what you created." When something in the frontend shows an error, checking whether it's a 4xx or 5xx immediately tells you which side of the wire to go debug first.
 
-## 8. Quick self-check
+## Interview questions
 
-Before moving to doc 02 (Pydantic & validation), you should be able to answer these without looking back up:
-- Why is DELETE idempotent even though it's not safe?
-- If a frontend sends a login request with the wrong password, should that be 401 or 403? (It's 401 — no valid identity was established at all. If the password were right but the account is role-restricted from a specific action, *that's* 403.)
-- Why does FastAPI return 422 instead of 400 for a malformed request body?
-- Why is it dangerous to let a 500 response leak the real exception message to the client?
+These are the kind of questions this topic actually draws in an interview — conceptual, meant to be answered out loud without looking anything up. Every one of them is answerable straight from what's above; work through them from memory first, then check back against the doc for anything shaky. No answers are given here on purpose — say them out loud or write them out, and share them if you want them checked.
+
+1. What's the difference between a request being "safe" and a request being "idempotent"? Give one method that's idempotent but not safe, and explain why.
+2. Why is DELETE idempotent even though it's not safe?
+3. If a frontend sends a login request with the wrong password, should the response be 401 or 403? What if the password is right but the account isn't allowed to perform that specific action?
+4. Why can a request with zero credentials never correctly be a 403?
+5. What's actually different, mechanically, between a 400 and a 422 — why can't `min_balance=-5` just be a 422 too, and why can't a missing `balance` field just be a 400?
+6. Why does FastAPI reject `POST /accounts` with a missing field before `create_account()`'s own code ever runs? What's the practical benefit of that order?
+7. Why should a 500 response never include the real exception message or stack trace to the client? Where does that information actually go instead?
+8. Why does a GET endpoint need to avoid changing server state, even if it would be convenient for it to do so?
+9. What's the risk of a frontend retrying a POST request after a network timeout, and how would you defend against it?
+10. What's the practical difference between a header and a query parameter — why does an API key go in a header instead of `?api_key=...`?
+11. What does "statelessness" mean for an HTTP API, and why does an auth token have to be sent on every single request instead of just once at login?
+12. Why is `/getAccount?id=1` or `/deleteAccount` considered bad REST design compared to `GET /accounts/1` and `DELETE /accounts/1`?
+13. If your frontend shows an error, what's the first thing the status code tells you about which side of the system to go debug?
+
+## Practice questions
+
+Attempt these yourself first — actually extend the companion script (`01 fastapi http fundamentals.py`), run it for real, and see what happens before checking anything. Then share your code and real output for a check.
+
+1. **Predict, then verify.** Add a new endpoint, `PATCH /accounts/{account_id}/holder`, that updates only the `holder` name on an existing account (leave `balance` untouched). Before you write a single line, answer: should this be idempotent? Is it safe? Write it, run it twice with the same body, and confirm your prediction against the real output.
+
+2. **Add a validation rule and trigger the real error.** Right now `AccountIn` accepts a negative `balance` on `POST /accounts` with no complaint. Add a Pydantic validator (or a field constraint) so creating an account with a negative balance fails — then actually create one with `balance: -50` and capture the real error response. Is it a 400 or a 422? Why does it come out that way given what section 4 explained about where each one originates?
+
+3. **Confirm 404 is consistent.** `GET /accounts/999` and `DELETE /accounts/999` should both 404 for the same reason. Run both for real against an account id that was never created, and explain in your own words why the delete route has to check for existence even though "deleting something that's already gone" is supposed to be harmless (idempotent) — what would go wrong if `delete_account()` skipped that check and just did `del accounts[account_id]` unconditionally?
+
+4. **Cause a genuine 500 on purpose, on a different endpoint than `/boom`.** Add a new endpoint that takes a body (e.g. a `POST /accounts/{account_id}/apply-bonus` that divides the new balance by some caller-supplied number) and feed it an input that makes it crash with an unhandled exception. Run it for real, confirm you get a plain 500 with no detail — then explain why this is a 500 and not a 422, given that the *shape* of the request body was perfectly valid.
+
+5. **Explain the 401 vs 403 decision tree in your own words**, in writing — not just "401 is this, 403 is that," but walking through the actual order `secure_list()` checks things in, and why swapping that order would be a real security mistake (what would a wrong-key request incorrectly reveal if the key check ran before the "is there a key at all" check?).
+
+---
+
+*When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build doc 02 — Pydantic & validation.*
 
 ## Appendix: the full companion script
 
