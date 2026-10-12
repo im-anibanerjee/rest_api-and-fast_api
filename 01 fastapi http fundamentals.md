@@ -1,10 +1,24 @@
 # 01 — HTTP Fundamentals & REST Principles (FastAPI)
 
-This is doc 1 of the FastAPI series. Everything in this doc was run for real against the demo app shown in section 2, using FastAPI's `TestClient` — every status code and every response body you see here is genuine captured output, not something typed from memory. To reproduce any of it yourself, copy the app code from section 2 into a file and run it with `uvicorn`, or drive it with `TestClient` the way this doc's output was captured.
+This is doc 1 of the FastAPI series. Everything in this doc was run for real against the demo app shown in section 2, using FastAPI's `TestClient` — every status code and every response body you see here is genuine captured output, not something typed from memory. To reproduce any of it yourself, copy the app code from section 2 into a file and run it with `uvicorn` (explained in section 2 — in short, the actual program that makes your FastAPI app reachable over a real network), or drive it with `TestClient` the way this doc's output was captured.
 
 Goal of this doc: understand what actually happens when your React/Node frontend talks to your FastAPI backend — the request/response cycle, HTTP methods, status codes, idempotency, and the core REST ideas — well enough that reading any FastAPI route in your real office codebase stops feeling like magic.
 
 ## 1. What an API call actually is
+
+### What "API" even means, before anything else
+
+Simple version: an API is just an agreed-upon way for one piece of software to ask another piece of software to do something, and get an answer back. "API" literally stands for **Application Programming Interface** — but that phrase is more confusing than helpful, so throw it away and keep this instead: it's a *menu*.
+
+Real-life example: when you sit down at a restaurant, you don't walk into the kitchen and cook your own food. You look at a menu, which lists exactly what you're allowed to ask for ("Butter Chicken", "Plain Naan") and in what form (you can ask for "spicy" or "mild", but you can't ask the kitchen to also do your laundry). You tell the waiter what you want, the kitchen does the actual work out of your sight, and the waiter brings back a plate. You never need to know *how* the kitchen cooked it — only what you're allowed to ask for, and what you'll get back.
+
+Real-world use case: your React/Node frontend is "the customer" and your FastAPI backend is "the kitchen." The frontend isn't allowed to reach directly into your PostgreSQL database and grab rows itself (that would be like a customer walking into the kitchen) — instead, it's only allowed to ask for exactly what your FastAPI routes offer (`GET /accounts`, `POST /accounts`, etc. — this is literally "the menu"), and your backend code does the real work (talking to the database) out of the frontend's sight, then hands back an answer.
+
+Technical deep dive: an **API** is a defined set of operations one program can call on another program, each with a fixed shape of input and output, without either side needing to know how the other is internally built. A **REST API over HTTP** (what this whole doc is about) is simply an API where those operations are HTTP requests to specific URLs using specific methods — `GET /accounts` is one "menu item," `POST /accounts` is another. FastAPI's whole job is to let you define that menu (via `@app.get(...)`, `@app.post(...)`, etc.) and handle all the low-level plumbing of actually receiving requests and sending responses, so you only have to write the part that matters: what happens when that menu item is ordered.
+
+Connecting back: so "calling an API" just means "asking the kitchen for something that's actually on the menu, through the waiter" — which, in HTTP terms, is sending a request to a specific URL with a specific method, and waiting for a response. That's exactly what the rest of this section breaks down, step by step.
+
+### The actual mechanics of one API call
 
 When your frontend "calls an API", it is doing exactly this, no more:
 
@@ -12,9 +26,28 @@ When your frontend "calls an API", it is doing exactly this, no more:
 2. The server runs some Python code that decides what to do, and sends back a **response**: a status code, some headers, and optionally a body.
 3. The connection closes (or is reused), and that's it. The server does not remember this happened unless it was explicitly told to write something to a database.
 
-That last point is the REST principle called **statelessness**: every request must carry everything the server needs to handle it (who you are, what you want). The server is not sitting there "remembering" that you're logged in from your last click — that's why auth tokens get sent on *every* request (more on this in section 5, and in full depth in doc 09 on OAuth2/JWT).
+Breaking that down further, in plain words, piece by piece:
 
-A request and a response are both just **text** over the wire (HTTP is a text-based protocol, even though bodies are usually JSON these days). Here's the literal shape of one request/response pair from the demo, written out the way it travels over the network:
+- **"Opens a network connection to a server"** — your frontend's code (running in the user's browser, or in Node) reaches out, over the internet or a local network, to the actual computer running your FastAPI app. Think of this like picking up a phone and dialing a number — a connection has to be established before you can say anything.
+- **"A server"** — this is just the computer (or process on a computer) that's sitting there, running your FastAPI code, waiting for requests to arrive. "Your FastAPI app" and "the server" mean the same thing here, for this doc's purposes.
+- **"A request"** — the actual message your frontend sends once connected. It has four parts: a **method** (what kind of thing you want to do — covered fully in section 3), a **URL** (which resource you want — `/accounts/1` means "account number 1"), **headers** (small pieces of metadata about the request itself — covered in section 5), and optionally a **body** (the actual data you're sending, like the new account details on a `POST`).
+- **"The server runs some Python code"** — this is the part *you* write. FastAPI looks at the method + URL and finds the matching function you wrote (this matching is called **routing** — more in section 2), then runs it.
+- **"Sends back a response"** — the server's answer, with the same basic shape as a request: a **status code** (a 3-digit number saying what happened — full breakdown in section 4), headers, and optionally a body (the actual data you asked for).
+- **"The connection closes... and that's it"** — once the answer is sent, nothing is kept around. The server doesn't keep a memory of "oh, this person just asked for account 1" sitting anywhere by default.
+
+That last point is the REST principle called **statelessness**. In even simpler words: imagine a shopkeeper with total amnesia between customers — every single time you walk up to the counter, you have to tell them your name and what you want all over again, because they genuinely don't remember you from thirty seconds ago, even if you were just there. That's your API server. Every request must carry everything the server needs to handle it (who you are, what you want) — the server is not sitting there "remembering" that you're logged in from your last click. That's exactly why auth tokens get sent on *every* request, not just once at login (more on this in section 5, and in full depth in doc 09 on OAuth2/JWT) — there's no memory to rely on in between.
+
+### What "JSON" means, since it's about to come up constantly
+
+Simple version: JSON is just a plain-text way of writing down structured information — like a form with labeled boxes — that both humans and computers can read easily.
+
+Real-life example: `{"id": 1, "holder": "Ravi Kumar", "balance": 5000.0}` is JSON for "account number 1, held by Ravi Kumar, with a balance of 5000.0" — same information as a filled-out form, just written with curly braces, colons, and commas instead of boxes and lines.
+
+Technical deep dive: **JSON** stands for **JavaScript Object Notation** — it's a text format for representing data as key-value pairs (`"holder": "Ravi Kumar"`), lists, numbers, strings, booleans, and nulls, nested as deep as you need. It's the near-universal format for request and response bodies in modern APIs (FastAPI reads and writes it automatically, which is most of what makes it convenient) — but it's worth remembering JSON is just *text* under the hood, no different in principle from a `.txt` file; it just follows strict punctuation rules so every program parsing it agrees on what it means.
+
+### What a raw request and response actually look like, travelling over the wire
+
+A request and a response are both just **text** over the wire (HTTP is a text-based protocol — meaning the actual bytes sent between your frontend and your server are plain, readable text, not some mysterious binary format — even though bodies are usually JSON these days). Here's the literal shape of one request/response pair from the demo, written out the way it actually travels over the network, broken down line by line below it:
 
 ```
 Request:
@@ -27,6 +60,14 @@ Response:
 
   {"id":1,"holder":"Ravi Kumar","balance":5000.0}
 ```
+
+Line by line, in plain words:
+- `GET /accounts/1 HTTP/1.1` — the method (`GET`), the path (`/accounts/1`), and which version of the HTTP protocol is being spoken (`HTTP/1.1` — you don't need to worry about version numbers for this doc; just know every request states one).
+- `Host: localhost:8000` — a header saying which actual server (by address) this request is meant for; `localhost` means "this same computer," `8000` is the specific port (a numbered "door" on that computer) the FastAPI app happens to be listening on.
+- (a blank line) — in the real HTTP format, a blank line is what separates the headers from the body. This particular GET request has no body at all, so nothing follows.
+- `HTTP/1.1 200 OK` — the response's first line: same protocol version, then the status code (`200`) and its standard short text label (`OK`).
+- `content-type: application/json` — a response header telling the receiver "the body you're about to read is JSON, parse it that way."
+- (a blank line, then) `{"id":1,"holder":"Ravi Kumar","balance":5000.0}` — the actual response body, in JSON, as plain text.
 
 Everything else in FastAPI — routers, dependency injection, Pydantic models — exists to make building *this* easier and safer. Keep this picture in your head; it's the foundation for every doc that follows.
 
@@ -125,7 +166,17 @@ Simple version: before you can open a shop, you first need to actually open the 
 ```python
 app = FastAPI(title="Demo Accounts API")
 ```
-This one line is "open the shop." It creates the actual running application object. Every `@app....` decorator below registers itself onto this exact `app` object — it's the thing a real server process (`uvicorn`) would point at to start listening for requests. `title` is just a label — it shows up on the auto-generated docs page FastAPI builds for you for free at `/docs`, worth opening once you run this yourself.
+This one line is "open the shop." It creates the actual running application object. Every `@app....` decorator below registers itself onto this exact `app` object.
+
+**What "uvicorn" actually is, since it keeps coming up:**
+
+Simple version: writing the `app` object above is like writing a complete, ready-to-cook recipe. It's not cooking anything by itself — you still need an actual stove to put it on. `uvicorn` is the stove.
+
+Real-life example: your FastAPI code (`app = FastAPI(...)`, the routes) describes *what* should happen for each kind of request — it's pure Python, sitting on disk, not doing anything on its own. For a real browser or a real frontend to actually reach it over a network, something has to literally open a network port, listen for incoming connections, read the raw bytes of each HTTP request, and hand them to your FastAPI code to process — then take whatever your code returns and write it back out as real HTTP bytes. That "something" is `uvicorn`.
+
+Technical deep dive: `uvicorn` is a separate Python package — an **ASGI server** (ASGI is just the technical name for the standard way Python web frameworks and servers agree to talk to each other; you don't need more than that right now). You run it from a terminal, typically as `uvicorn app:app --reload`, pointing it at your file (`app.py`, say) and the variable name of your FastAPI object inside it (`app`). Once running, it genuinely opens a network port (commonly `8000`, like in section 1's raw example) and keeps running, waiting for real requests, until you stop it. This doc never actually needed `uvicorn` to produce any of its output — section 2's walkthrough covers why `TestClient` was used instead (it calls your routes directly, in-process, without needing a real open network port at all) — but in your actual job, and once you start building FastAPI's own standalone project later in this phase, `uvicorn` (or something that wraps it, like Docker eventually will) is what's actually running at all times, keeping your API reachable.
+
+Connecting back: so `app = FastAPI(...)` is the recipe, your route functions are the individual cooking steps, and `uvicorn` is the stove that actually plugs them into the real world of network requests. `title` on the `FastAPI(...)` call is just a label — it shows up on the auto-generated docs page FastAPI builds for you for free at `/docs` once something like `uvicorn` is actually serving the app, worth opening once you try this yourself.
 
 Simple version: a real app needs somewhere to actually keep its data. A real database is the proper tool for that, but for a tiny demo like this, a database is overkill — so this just uses a sticky-note board instead: a couple of notes already stuck on it, and a reminder of what number to write on the next new note.
 
@@ -171,7 +222,9 @@ def list_accounts(min_balance: float | None = Query(default=None)):
         results = [a for a in results if a["balance"] >= min_balance]
     return results
 ```
-The first check exists because "show me accounts with a balance of at least -5" makes no real-world sense — it's a business rule *we* chose to enforce ourselves, which is exactly why it's a 400 and not a 422 (FastAPI's own validation had nothing to do with rejecting it; see section 4). `accounts.values()` pulls every account out of the sticky-note board; the list comprehension keeps only the ones at or above the filter, if one was asked for. Whatever this function `return`s, FastAPI automatically serializes to JSON and sends back as the response body — you never call anything like `response.send()` yourself; the return value *is* the response.
+The first check exists because "show me accounts with a balance of at least -5" makes no real-world sense — it's a business rule *we* chose to enforce ourselves, which is exactly why it's a 400 and not a 422 (FastAPI's own validation had nothing to do with rejecting it; see section 4). `accounts.values()` pulls every account out of the sticky-note board. `[a for a in results if a["balance"] >= min_balance]` is a **list comprehension** — plain Python shorthand for "build a new list by going through `results` one item at a time (`a`), and only keeping the ones where the condition after `if` is true." It's exactly the same idea as a `for` loop with an `if` check inside it that appends to a new list — just written on one line, which is an extremely common pattern in real Python code, not FastAPI-specific at all.
+
+Whatever this function `return`s, FastAPI automatically **serializes** it to JSON and sends it back as the response body. "Serialize" just means "convert a real, in-memory Python object (a list of dicts, here) into plain text that can actually travel over a network" — the reverse of what happens to an incoming JSON body when it becomes a real Python/Pydantic object. You never call anything like `response.send()` yourself; the return value *is* the response, and FastAPI handles turning it into bytes on the wire.
 
 Simple version: this is the "look up one specific customer by their account number" counter — like a bank teller who asks for your account number and goes straight to your folder, instead of handing you the entire filing cabinet to search through yourself.
 
@@ -241,7 +294,7 @@ Simple version: every programmer eventually ships a real bug — this route isn'
 def boom():
     return 1 / 0
 ```
-No `HTTPException`, no validation, nothing deliberate about producing an error response — `1 / 0` just raises a real Python `ZeroDivisionError`, exactly as it would in any ordinary script. Nothing here catches it. That's the entire point: showing what happens when your own code genuinely breaks (section 4's 500), without you having to wait for a real bug in a real project to see it.
+No `HTTPException`, no validation, nothing deliberate about producing an error response — `1 / 0` just raises a real Python **exception** (a `ZeroDivisionError`, specifically), exactly as it would in any ordinary script. In plain words, an exception is Python's way of saying "something went wrong and I cannot continue running this line normally" — it immediately stops whatever function it happened in and looks for some surrounding code that said "if something goes wrong here, do this instead" (that's what `try`/`except` is for, and what `raise HTTPException(...)` is actually doing deliberately everywhere else in this file). Nothing here catches it. That's the entire point: showing what happens when your own code genuinely breaks and nobody wrote a `try`/`except` for it (section 4's 500), without you having to wait for a real bug in a real project to see it.
 
 ## 3. HTTP methods and what they *mean*
 
@@ -519,7 +572,9 @@ accounts/the database doesn't get a chance to run in the first place.
 status: 500
 body (raw): Internal Server Error
 ```
-The route does `return 1 / 0`, a plain Python `ZeroDivisionError`. Nothing in the route catches it, so FastAPI's default behavior is to turn *any* unhandled exception into a generic 500 with no detail about what actually broke (good — you never want to leak a stack trace or internal exception message to a client; that's an information-disclosure risk). Internally, the real exception and traceback are still logged on the server for you to debug. A note on how this was captured: by default, FastAPI's `TestClient` re-raises the exception in the test process (useful when you're writing pytest tests and want a failure to show you the real traceback) — to see the *actual* HTTP-level 500 a real browser would get, the client here was built with `TestClient(app, raise_server_exceptions=False)`. Doc 10 (middleware) and later docs cover writing custom exception handlers so a 500 can return a consistent JSON error shape instead of this plain-text default.
+The route does `return 1 / 0`, a plain Python `ZeroDivisionError` (an exception — see section 2's `/boom` explanation for what that word means). Nothing in the route catches it, so FastAPI's default behavior is to turn *any* unhandled exception into a generic 500 with no detail about what actually broke. That's deliberate, and worth understanding why: a **stack trace** is the detailed, line-by-line record of exactly what your code was doing when it crashed — which file, which function, which variables. That's incredibly useful to *you* while debugging, but genuinely dangerous to show a stranger on the internet, since it can reveal your file structure, library versions, or even snippets of your own logic — information an attacker could use. That's called an **information-disclosure risk**: leaking information you didn't mean to, just by being too helpful in an error message. So FastAPI deliberately hides all of that from the client and shows a plain "Internal Server Error" instead — while still keeping the real exception and full traceback logged on the server itself, where only you (not the public internet) can see it, for you to actually debug.
+
+A note on how this specific example was captured: by default, FastAPI's `TestClient` re-raises the exception in the test process itself, rather than quietly turning it into a 500 — useful when you're writing pytest tests and want a failure to show you the real traceback immediately. To see the *actual* HTTP-level 500 a real browser would get instead, the client here was built with `TestClient(app, raise_server_exceptions=False)` (see the methodology section at the end of this doc for the full detail on this). Doc 10 (middleware) and later docs cover writing custom exception handlers so a 500 can return a consistent JSON error shape instead of this plain-text default.
 
 ## 5. Headers: metadata about the request/response, not the content itself
 
@@ -532,22 +587,28 @@ def secure_list(x_api_key: str | None = Header(default=None)):
 
 FastAPI converts `X-API-Key` (the real HTTP header name, case-insensitive, hyphenated) into the Python parameter `x_api_key` (underscored) automatically — that naming conversion is a FastAPI convention worth remembering so header-based code doesn't look mysterious later.
 
-Why headers and not query params or body for things like this? Because headers are the conventional place for cross-cutting concerns that aren't part of "the data" — authentication tokens, content negotiation (`Accept`, `Content-Type`), correlation/tracing IDs, caching directives. The real `Authorization: Bearer <token>` header you'll build in doc 09 works exactly the same mechanical way as `X-API-Key` does here; only the parsing and validation logic gets more involved.
+Why headers and not query params or body for things like this? Because headers are the conventional place for information *about* the request, rather than the actual data the request is carrying. A few examples of what that means in practice, in plain words: authentication tokens ("who is making this request"); **content negotiation** — headers like `Accept` and `Content-Type`, which just mean "what format am I sending/expecting back, JSON or something else"; **correlation/tracing IDs** — a unique ID attached to a request purely so that if it passes through several different backend services, you can find all the related log lines across every one of them afterward, like a tracking number for a request instead of a package; and caching directives — headers telling browsers/proxies things like "you're allowed to remember this response for 5 minutes instead of asking again." None of these are "the data" the frontend actually wants — they're metadata *about* the asking, which is exactly why they travel separately from the body. The real `Authorization: Bearer <token>` header you'll build in doc 09 works exactly the same mechanical way as `X-API-Key` does here; only the parsing and validation logic gets more involved.
 
 ## 6. REST, concretely
 
 "REST" gets thrown around vaguely, but concretely, the ideas this demo already follows are:
 
-- **Resources are nouns, identified by URLs.** `/accounts` is the collection, `/accounts/1` is one specific account. The *method* (GET/POST/PUT/DELETE) carries the verb, not the URL. A URL like `/getAccount?id=1` or `/deleteAccount` is the anti-pattern — if you ever see that in older code, that's RPC-style thinking leaking into what's supposed to be REST.
+- **Resources are nouns, identified by URLs.** `/accounts` is the collection, `/accounts/1` is one specific account. The *method* (GET/POST/PUT/DELETE) carries the verb, not the URL. A URL like `/getAccount?id=1` or `/deleteAccount` is the anti-pattern — if you ever see that in older code, that's **RPC-style** thinking leaking into what's supposed to be REST. In plain words: RPC ("Remote Procedure Call") is an older style where a URL is basically just the *name of a function* you're calling remotely ("get-account", "delete-account") — the verb lives in the URL itself, and every URL is its own one-off action. REST deliberately moves the verb into the HTTP method instead, so the URL only ever has to name *what thing* you mean (`/accounts/1`), not *what you're doing to it* — that's what makes `GET /accounts/1` and `DELETE /accounts/1` reuse the exact same URL instead of needing two different ones.
 - **Uniform interface.** Every resource in this API is manipulated with the same five verbs. You don't invent `/accounts/1/remove` when DELETE `/accounts/1` already means that.
 - **Representations, not the resource itself.** The client never gets the actual Python dict from the server's memory — it gets a JSON *representation* of it. This is why the response for `GET /accounts/1` and the internal `accounts[1]` dict happen to look identical here (we didn't bother hiding any fields in this toy example), but in a real API you'll often return a different shape than what's stored (e.g., never return a password hash even though it's a real column).
 - **Statelessness** (section 1) — nothing here depends on "the previous request." Each call to `/accounts/1` carries everything needed to answer it.
 
-What this demo does *not* yet show, on purpose, because they need their own docs: pagination for large collections, nested resources (`/accounts/1/transactions`), HATEOAS-style links (rarely used in practice — don't worry about this one), and versioning (`/v1/accounts`). You'll meet these as they come up in the real work-project deep dive later in the roadmap.
+What this demo does *not* yet show, on purpose, because they need their own docs — explained briefly here just so the words aren't a total mystery when you hear them:
+- **Pagination** — when `/accounts` has 2 rows, returning all of them is fine; when it has 2 million, you'd never return them all in one response. Pagination means returning a small page at a time (e.g. "give me rows 1-50"), with some way to ask for the next page.
+- **Nested resources** (`/accounts/1/transactions`) — a URL shape for "things that belong to a specific other thing" — "the transactions that belong to account 1," read as a path, left to right.
+- **HATEOAS-style links** (rarely used in practice — don't worry about this one) — an idea where a response itself contains links to related actions you could take next (e.g. the account response also includes a link to its own transactions), so a client doesn't need to know any URL structure in advance. Mentioned only because you may hear the term; it's genuinely rare in real APIs.
+- **Versioning** (`/v1/accounts`) — putting a version number in the URL so that when you change how an endpoint behaves, old frontend code calling `/v1/accounts` keeps working exactly as before, while new code can call `/v2/accounts` for the new behavior.
+
+You'll meet these as they come up in the real work-project deep dive later in the roadmap.
 
 ## 7. How this maps to your actual job
 
-Your real frontend (React/Node) talks to your real FastAPI backend using exactly this mechanism — `fetch`/`axios` calls that are GET/POST/PUT/DELETE requests to specific URLs, and your backend routes handle them with functions that look structurally identical to the ones in this demo (just backed by PostgreSQL instead of a dict, which is doc 06). When you're reading an existing route in your office codebase and see `@router.post("/something", status_code=201)`, you now know precisely what every piece of that means: it's registering a non-idempotent, non-safe handler for creating something, and 201 is the convention for "created successfully, here's what you created." When something in the frontend shows an error, checking whether it's a 4xx or 5xx immediately tells you which side of the wire to go debug first.
+Your real frontend (React/Node) talks to your real FastAPI backend using exactly this mechanism — `fetch` and `axios` are simply the names of the tools JavaScript code uses to actually send an HTTP request (the same way `TestClient` was used to send one from Python throughout this doc) — so a line like `axios.post("/accounts", {...})` in your frontend code is doing exactly what `client.post("/accounts", json={...})` did here, just from the browser side instead of from a test script. Those calls are GET/POST/PUT/DELETE requests to specific URLs, and your backend routes handle them with functions that look structurally identical to the ones in this demo (just backed by PostgreSQL instead of a dict, which is doc 06). When you're reading an existing route in your office codebase and see `@router.post("/something", status_code=201)`, you now know precisely what every piece of that means: it's registering a non-idempotent, non-safe handler for creating something, and 201 is the convention for "created successfully, here's what you created." When something in the frontend shows an error, checking whether it's a 4xx or 5xx immediately tells you which side of the wire to go debug first.
 
 ## Interview questions
 
