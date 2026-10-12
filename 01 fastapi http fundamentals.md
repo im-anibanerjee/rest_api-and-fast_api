@@ -583,8 +583,4 @@ Attempt these yourself first — copy the demo app from section 2 into your own 
 
 ---
 
-*When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build doc 02 — Pydantic & validation.*
-
-How the output above was actually captured: every example in this doc was produced by running the section-2 app with FastAPI's `TestClient` (`TestClient(app, raise_server_exceptions=False)` so `/boom` gives back a genuine HTTP 500 instead of re-raising) and calling every route with the inputs shown — nothing here is typed from memory.
-
-**Next:** doc 02 — Pydantic & validation (what `BaseModel` is actually doing under the hood, custom validators, nested models, and why the 422 error shape above looks the way it does).
+*When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build the next doc.*
