@@ -1,6 +1,6 @@
 # 01 — HTTP Fundamentals & REST Principles (FastAPI)
 
-This is doc 1 of the FastAPI series. Everything in this doc was run for real against the companion script `01 fastapi http fundamentals.py` (same folder as this doc) using FastAPI's `TestClient` — every status code and every response body you see here is genuine captured output, not something typed from memory. To reproduce any of it yourself, run `python "01 fastapi http fundamentals.py"` — the full script, including the part that drives every endpoint and prints the output, is reproduced at the bottom of this doc.
+This is doc 1 of the FastAPI series. Everything in this doc was run for real against the demo app shown in section 2, using FastAPI's `TestClient` — every status code and every response body you see here is genuine captured output, not something typed from memory. To reproduce any of it yourself, copy the app code from section 2 into a file and run it with `uvicorn`, or drive it with `TestClient` the way this doc's output was captured.
 
 Goal of this doc: understand what actually happens when your React/Node frontend talks to your FastAPI backend — the request/response cycle, HTTP methods, status codes, idempotency, and the core REST ideas — well enough that reading any FastAPI route in your real office codebase stops feeling like magic.
 
@@ -32,7 +32,7 @@ Everything else in FastAPI — routers, dependency injection, Pydantic models �
 
 ## 2. The demo app
 
-This is the app half of the companion script every example in this doc was run against — a tiny in-memory "accounts" API (no real database yet; that's doc 06). The full file (shown in the appendix) also has a runnable block at the bottom that drives it:
+This is the full demo app every example in this doc was run against — a tiny in-memory "accounts" API (no real database yet; that's doc 06):
 
 ```python
 from fastapi import FastAPI, HTTPException, Header, Query
@@ -114,10 +114,134 @@ def boom():
     return 1 / 0
 ```
 
-Things to notice already, even before we discuss any of it:
-- `@app.get(...)`, `@app.post(...)`, etc. are **decorators** that register a Python function to handle a specific HTTP method + URL path. This mapping of (method, path) → function is called **routing**.
-- `account_id: int` in the function signature is a **path parameter** — FastAPI pulls it out of the URL (`/accounts/1` → `account_id=1`) and converts it to an `int` automatically. If you send `/accounts/abc`, FastAPI rejects it before your function even runs (we'll see this produce a 422 in practice).
-- `account: AccountIn` is a **request body** — FastAPI reads the JSON body, validates it against the `AccountIn` Pydantic model, and hands you a real Python object. Doc 02 goes deep on this; today we just need to know validation failures become 422 responses automatically, for free.
+### What every line of this is actually doing, and why you'd bother writing it
+
+Before any HTTP concepts, it's worth being completely literal about what each piece of this file does — not just mechanically, but *why anyone would write that line in the first place*. Everything after this section just points back into it.
+
+**The app object and the "database":**
+
+Simple version: before you can open a shop, you first need to actually open the shop — switch the lights on, hang the "open" sign. Nothing can be registered or sold until that exists.
+
+```python
+app = FastAPI(title="Demo Accounts API")
+```
+This one line is "open the shop." It creates the actual running application object. Every `@app....` decorator below registers itself onto this exact `app` object — it's the thing a real server process (`uvicorn`) would point at to start listening for requests. `title` is just a label — it shows up on the auto-generated docs page FastAPI builds for you for free at `/docs`, worth opening once you run this yourself.
+
+Simple version: a real app needs somewhere to actually keep its data. A real database is the proper tool for that, but for a tiny demo like this, a database is overkill — so this just uses a sticky-note board instead: a couple of notes already stuck on it, and a reminder of what number to write on the next new note.
+
+```python
+accounts: dict[int, dict] = {
+    1: {"id": 1, "holder": "Ravi Kumar", "balance": 5000.00},
+    2: {"id": 2, "holder": "Priya Shah", "balance": 3000.00},
+}
+next_id = 3
+```
+`accounts` IS the entire "database" for this demo — a plain Python dictionary, keyed by account id, where each value is itself a dictionary of that account's fields. `dict[int, dict]` is only a type hint (for you and your editor); Python does not enforce it at runtime. `next_id` is a plain integer tracking what id the *next* created account should get — it starts at 3 because ids 1 and 2 are already taken. Because this is just a variable sitting in the running process's memory (not a real sticky-note board, not a file, not a database), it resets to exactly this starting state every time the process restarts — nothing here actually persists. That's deliberate for this demo; doc 06 replaces this dict with a real PostgreSQL table that *does* persist.
+
+**The two Pydantic models:**
+
+Simple version: before you let someone into a building, you want a bouncer at the door checking their paperwork is actually filled in — "do you have a name, do you have an ID" — rather than letting anyone in and finding out something's missing once they're already inside causing problems.
+
+```python
+class AccountIn(BaseModel):
+    holder: str
+    balance: float
+
+
+class AccountUpdate(BaseModel):
+    balance: float
+```
+These two classes are that bouncer's checklist. Doc 02 goes deep on what `BaseModel` is actually doing; the minimum you need now is: declaring a class like this tells FastAPI "a valid request body for this route must have a `holder` that's a string and a `balance` that's a number — nothing missing, nothing extra, by default." Why two separate checklists instead of one? Because creating a new account and updating an existing one need different paperwork — creating needs a name AND a balance (`AccountIn`), but updating a balance only needs the new number, not the holder's name all over again (`AccountUpdate`). Using the smaller checklist where it fits is just not asking for information you don't need.
+
+**Every route — what it's actually for, what triggers it, and what each line does:**
+
+Simple version: you need a "look up a group of customers" counter at the bank, and sometimes the customer wants to filter — "only show me accounts with at least ₹4000 in them" — rather than being handed every single account and having to scan through them by hand.
+
+```python
+@app.get("/accounts")
+def list_accounts(min_balance: float | None = Query(default=None)):
+```
+`@app.get("/accounts")` registers this function to run whenever a GET request arrives for exactly the path `/accounts` — that's **routing**: the (method, path) pair is the key, this function is the value. `min_balance: float | None = Query(default=None)` means: look for a query-string parameter named `min_balance` (the part after `?` in a URL, e.g. `/accounts?min_balance=4000`); default to `None` if nobody asked for a filter; if present, convert it to `float` automatically — and reject the request with a 422 if it can't be converted (e.g. `?min_balance=abc`), before this function body ever runs. Doing the filtering on the server, instead of sending every account to the frontend and letting it filter, matters for real APIs: you don't want to ship your entire customer list over the network just to throw most of it away on the other end.
+
+```python
+    if min_balance is not None and min_balance < 0:
+        raise HTTPException(status_code=400, detail="min_balance cannot be negative")
+    results = list(accounts.values())
+    if min_balance is not None:
+        results = [a for a in results if a["balance"] >= min_balance]
+    return results
+```
+The first check exists because "show me accounts with a balance of at least -5" makes no real-world sense — it's a business rule *we* chose to enforce ourselves, which is exactly why it's a 400 and not a 422 (FastAPI's own validation had nothing to do with rejecting it; see section 4). `accounts.values()` pulls every account out of the sticky-note board; the list comprehension keeps only the ones at or above the filter, if one was asked for. Whatever this function `return`s, FastAPI automatically serializes to JSON and sends back as the response body — you never call anything like `response.send()` yourself; the return value *is* the response.
+
+Simple version: this is the "look up one specific customer by their account number" counter — like a bank teller who asks for your account number and goes straight to your folder, instead of handing you the entire filing cabinet to search through yourself.
+
+```python
+@app.get("/accounts/{account_id}")
+def get_account(account_id: int):
+    if account_id not in accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+    return accounts[account_id]
+```
+`{account_id}` in the decorated path is a placeholder — FastAPI matches it against whatever's actually in the URL (`/accounts/1` → the raw string `"1"`), then converts it to `int` because that's the parameter's type hint, rejecting with a 422 if it isn't a valid integer at all (`/accounts/abc`) — same validate-before-your-code-runs idea as the body case, just applied to a piece of the URL instead. Once `account_id` is a real Python `int`, the function body is just a dict lookup — why bother checking `if account_id not in accounts` first, rather than just looking it up directly? Because looking up a missing dict key crashes with a real Python error; checking first lets us hand back a clean, deliberate 404 instead of an ugly server crash. `raise HTTPException(...)` is how you deliberately produce a non-200 response from inside your own code — raising it stops execution right there, and FastAPI turns it into the response described by that `status_code`/`detail`.
+
+Simple version: this is the "open a brand-new account" counter — the one and only place in this whole file that invents a new id. Every other route works on an account that already exists; this is the exception that creates one from scratch.
+
+```python
+@app.post("/accounts", status_code=201)
+def create_account(account: AccountIn):
+    global next_id
+    new_account = {"id": next_id, "holder": account.holder, "balance": account.balance}
+    accounts[next_id] = new_account
+    next_id += 1
+    return new_account
+```
+`status_code=201` overrides FastAPI's default of 200 for this one route — convention is 201 for a POST that creates something, so the frontend can tell "created" apart from "just fetched." `account: AccountIn` is the request body — FastAPI reads the incoming JSON, runs it past the bouncer's checklist from above (this is exactly where the 422 in section 4 actually gets raised, before this line of code ever runs), and hands you a real Python object with real attributes (`account.holder`, `account.balance`) — no manual `json.loads()` anywhere in sight. Why `global next_id`? Because this function changes `next_id` (`next_id += 1`), and without telling Python "I mean the one outside this function," Python would quietly create a brand-new, separate `next_id` that only exists inside this one call and throw it away afterward — leaving the real counter outside never incremented. That's the same scoping rule the Python docs' `global` coverage already walked through, just showing up here inside a route.
+
+Simple version: this is the "correct this account's balance to this exact number" counter — like crossing out a typo on a form and writing the right number, not adding a new line underneath it.
+
+```python
+@app.put("/accounts/{account_id}")
+def replace_balance(account_id: int, update: AccountUpdate):
+    if account_id not in accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+    accounts[account_id]["balance"] = update.balance
+    return accounts[account_id]
+```
+Same path-parameter and body-validation mechanics as `POST` above, just combined on one route — `account_id` comes from the URL, `update` comes from the JSON body (checked against the smaller `AccountUpdate` checklist). The actual "replace" is one line: overwrite `balance` with whatever was sent, unconditionally — no counter, no `+=`, nothing that depends on how many times this has already run. That unconditional overwrite is exactly *why* PUT is idempotent (section 3).
+
+Simple version: this is the "close this account" counter.
+
+```python
+@app.delete("/accounts/{account_id}", status_code=204)
+def delete_account(account_id: int):
+    if account_id not in accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+    del accounts[account_id]
+    return None
+```
+`status_code=204` again overrides the default, matching the "No Content" convention — once something's deleted, there's nothing left to show you, so why send back a body at all? `del accounts[account_id]` is plain Python dict deletion — nothing FastAPI-specific. Returning `None` here isn't optional style — FastAPI won't let a 204 response carry a body at all (section 4), so returning anything with real content on a `status_code=204` route would be a framework-level error, not just an unconventional choice.
+
+Simple version: this simulates a locked door. You need the right key (a header) to get in, and the doorman checks two separate things, in a specific order: do you even have a key at all, and only if you do, is it the *right* key?
+
+```python
+@app.get("/secure-accounts")
+def secure_list(x_api_key: str | None = Header(default=None)):
+    if x_api_key is None:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    if x_api_key != "secret-admin-key":
+        raise HTTPException(status_code=403, detail="This key is not allowed to view secure accounts")
+    return list(accounts.values())
+```
+`Header(default=None)` is the header equivalent of `Query(default=None)` above — it pulls a value out of the request's headers instead of the query string or body, because a credential like this belongs with the "metadata about the request," not mixed into the actual data (section 5 explains why). FastAPI automatically matches the Python parameter name `x_api_key` to the real HTTP header `X-API-Key`. The two `if` checks, run in that exact order (no key at all, THEN wrong key), are the whole 401-vs-403 decision tree traced in section 4's diagram — and that order matters, not just for correctness but so a wrong-key attempt can never accidentally be mistaken for "no key presented."
+
+Simple version: every programmer eventually ships a real bug — this route isn't a feature at all, it exists purely to show you, on purpose and safely, what that actually looks like from the outside.
+
+```python
+@app.get("/boom")
+def boom():
+    return 1 / 0
+```
+No `HTTPException`, no validation, nothing deliberate about producing an error response — `1 / 0` just raises a real Python `ZeroDivisionError`, exactly as it would in any ordinary script. Nothing here catches it. That's the entire point: showing what happens when your own code genuinely breaks (section 4's 500), without you having to wait for a real bug in a real project to see it.
 
 ## 3. HTTP methods and what they *mean*
 
@@ -445,7 +569,7 @@ These are the kind of questions this topic actually draws in an interview — co
 
 ## Practice questions
 
-Attempt these yourself first — actually extend the companion script (`01 fastapi http fundamentals.py`), run it for real, and see what happens before checking anything. Then share your code and real output for a check.
+Attempt these yourself first — copy the demo app from section 2 into your own file, extend it, run it for real, and see what happens before checking anything. Then share your code and real output for a check.
 
 1. **Predict, then verify.** Add a new endpoint, `PATCH /accounts/{account_id}/holder`, that updates only the `holder` name on an existing account (leave `balance` untouched). Before you write a single line, answer: should this be idempotent? Is it safe? Write it, run it twice with the same body, and confirm your prediction against the real output.
 
@@ -461,135 +585,6 @@ Attempt these yourself first — actually extend the companion script (`01 fasta
 
 *When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build doc 02 — Pydantic & validation.*
 
-## Appendix: the full companion script
-
-For completeness/reproducibility, this is the complete `01 fastapi http fundamentals.py` (same folder as this doc) — the app definitions from section 2, plus the runnable block at the bottom that produced every captured output above. Run it directly with `python "01 fastapi http fundamentals.py"`:
-
-```python
-"""
-Companion script for '01 fastapi http fundamentals.md'.
-
-Defines a tiny demo API (not the real standalone project - just big
-enough to show every HTTP concept the doc covers), then, if you run this
-file directly, drives every endpoint with FastAPI's TestClient and
-prints real request/response pairs. Every status code and body quoted
-in the doc was produced by running exactly this file.
-"""
-from fastapi import FastAPI, HTTPException, Header, Query
-from pydantic import BaseModel
-
-app = FastAPI(title="Demo Accounts API")
-
-# in-memory "database" - just a dict, reset every time the process starts
-accounts: dict[int, dict] = {
-    1: {"id": 1, "holder": "Ravi Kumar", "balance": 5000.00},
-    2: {"id": 2, "holder": "Priya Shah", "balance": 3000.00},
-}
-next_id = 3
-
-
-class AccountIn(BaseModel):
-    holder: str
-    balance: float
-
-
-class AccountUpdate(BaseModel):
-    balance: float
-
-
-@app.get("/accounts")
-def list_accounts(min_balance: float | None = Query(default=None)):
-    if min_balance is not None and min_balance < 0:
-        raise HTTPException(status_code=400, detail="min_balance cannot be negative")
-    results = list(accounts.values())
-    if min_balance is not None:
-        results = [a for a in results if a["balance"] >= min_balance]
-    return results
-
-
-@app.get("/accounts/{account_id}")
-def get_account(account_id: int):
-    if account_id not in accounts:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return accounts[account_id]
-
-
-@app.post("/accounts", status_code=201)
-def create_account(account: AccountIn):
-    global next_id
-    new_account = {"id": next_id, "holder": account.holder, "balance": account.balance}
-    accounts[next_id] = new_account
-    next_id += 1
-    return new_account
-
-
-@app.put("/accounts/{account_id}")
-def replace_balance(account_id: int, update: AccountUpdate):
-    if account_id not in accounts:
-        raise HTTPException(status_code=404, detail="Account not found")
-    accounts[account_id]["balance"] = update.balance
-    return accounts[account_id]
-
-
-@app.delete("/accounts/{account_id}", status_code=204)
-def delete_account(account_id: int):
-    if account_id not in accounts:
-        raise HTTPException(status_code=404, detail="Account not found")
-    del accounts[account_id]
-    return None
-
-
-@app.get("/secure-accounts")
-def secure_list(x_api_key: str | None = Header(default=None)):
-    if x_api_key is None:
-        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
-    if x_api_key != "secret-admin-key":
-        raise HTTPException(status_code=403, detail="This key is not allowed to view secure accounts")
-    return list(accounts.values())
-
-
-@app.get("/boom")
-def boom():
-    # deliberately unhandled - demonstrates a real 500
-    return 1 / 0
-
-
-if __name__ == "__main__":
-    # Drives every scenario above and prints real request/response pairs.
-    # This is the exact output quoted throughout the doc.
-    import json
-    from fastapi.testclient import TestClient
-
-    # raise_server_exceptions=False so /boom's unhandled ZeroDivisionError
-    # comes back as a genuine HTTP 500 response instead of re-raising inside
-    # this process (the default is True, meant for pytest-style tests that
-    # want the traceback to fail the test).
-    client = TestClient(app, raise_server_exceptions=False)
-
-    def show(label, resp):
-        print(f"\n--- {label} ---")
-        print(f"status: {resp.status_code}")
-        try:
-            print("body:", json.dumps(resp.json(), indent=2))
-        except Exception:
-            print("body (raw):", resp.text)
-
-    show("GET /accounts", client.get("/accounts"))
-    show("GET /accounts?min_balance=4000", client.get("/accounts", params={"min_balance": 4000}))
-    show("GET /accounts?min_balance=-5 (400)", client.get("/accounts", params={"min_balance": -5}))
-    show("GET /accounts/1", client.get("/accounts/1"))
-    show("GET /accounts/999 (404)", client.get("/accounts/999"))
-    show("POST /accounts (1st call)", client.post("/accounts", json={"holder": "Dev Patel", "balance": 1200.0}))
-    show("POST /accounts (2nd call, same body)", client.post("/accounts", json={"holder": "Dev Patel", "balance": 1200.0}))
-    show("POST /accounts malformed body (422)", client.post("/accounts", json={"holder": "No Balance Field"}))
-    show("PUT /accounts/1 (1st call)", client.put("/accounts/1", json={"balance": 9999.0}))
-    show("PUT /accounts/1 (2nd call, same body)", client.put("/accounts/1", json={"balance": 9999.0}))
-    show("DELETE /accounts/2 (204)", client.delete("/accounts/2"))
-    show("GET /accounts/2 after delete (404)", client.get("/accounts/2"))
-    show("GET /secure-accounts no header (401)", client.get("/secure-accounts"))
-    show("GET /secure-accounts wrong key (403)", client.get("/secure-accounts", headers={"X-API-Key": "wrong-key"}))
-    show("GET /secure-accounts correct key (200)", client.get("/secure-accounts", headers={"X-API-Key": "secret-admin-key"}))
-    show("GET /boom (500)", client.get("/boom"))
-```
+How the output above was actually captured: every example in this doc was produced by running the section-2 app with FastAPI's `TestClient` (`TestClient(app, raise_server_exceptions=False)` so `/boom` gives back a genuine HTTP 500 instead of re-raising) and calling every route with the inputs shown — nothing here is typed from memory.
 
 **Next:** doc 02 — Pydantic & validation (what `BaseModel` is actually doing under the hood, custom validators, nested models, and why the 422 error shape above looks the way it does).
