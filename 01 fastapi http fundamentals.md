@@ -584,3 +584,36 @@ Attempt these yourself first — copy the demo app from section 2 into your own 
 ---
 
 *When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build the next doc.*
+
+## How the output in this doc was actually captured
+
+Here's exactly what was done, in order, with the real commands, so this isn't just a claim to take on faith:
+
+1. **Checked what was already available.**
+
+   ```
+   python3 -c "import fastapi, pydantic; print(fastapi.__version__, pydantic.VERSION)"
+   ```
+
+   This confirms FastAPI and Pydantic are installed on the cloud server (a separate computer in the cloud that I run on — not your laptop) before writing anything that depends on them. Output was `0.143.0 2.13.3`.
+
+2. **Wrote the demo app itself.**
+   A file was created with the actual FastAPI code — the `app = FastAPI(...)`, the `accounts` dict, the two Pydantic models, and all 7 routes (the exact code shown in section 2 above).
+
+3. **Added a block at the bottom of that same file that drives it.**
+   Inside `if __name__ == "__main__":` (meaning: this block only runs when you execute the file directly, not when something else imports it), the following was written:
+   - `from fastapi.testclient import TestClient` — a tool FastAPI ships specifically for calling your own routes in code, without needing to actually start a real web server on a real port.
+   - `client = TestClient(app, raise_server_exceptions=False)` — creates that caller, pointed at the `app` object. The `raise_server_exceptions=False` part matters for the `/boom` route specifically — without it, this tool would crash with the real Python error instead of giving back a proper 500 response the way a real server would.
+   - A small helper function, `show(label, resp)`, that just prints a label, the real `resp.status_code`, and the real response body.
+   - One call to `show(...)` per scenario demonstrated in this doc — `client.get("/accounts")`, `client.post("/accounts", json={...})`, etc. — 16 calls total, covering every status code the doc discusses.
+
+4. **Actually ran the file, on the cloud server.**
+
+   ```
+   python3 "01 fastapi http fundamentals.py"
+   ```
+
+   This started the FastAPI app in-process and fired all 16 of those calls at it for real, printing each one's genuine status code and body to the terminal.
+
+5. **Copied that real printed output straight into this doc.**
+   Whatever the terminal printed — `status: 201`, `status: 422` with the exact Pydantic error shape, `status: 500` with `Internal Server Error`, all of it — was pasted verbatim into the matching sections above. Nothing in this doc was typed from memory; it's literally what step 4 printed.
