@@ -371,6 +371,57 @@ def secure_list(x_api_key: str | None = Header(default=None)):
 ```
 `Header(default=None)` is the header equivalent of `Query(default=None)` above — it pulls a value out of the request's headers instead of the query string or body, because a credential like this belongs with the "metadata about the request," not mixed into the actual data (section 5 explains why). FastAPI automatically matches the Python parameter name `x_api_key` to the real HTTP header `X-API-Key`. The two `if` checks, run in that exact order (no key at all, THEN wrong key), are the whole 401-vs-403 decision tree traced in section 4's diagram — and that order matters, not just for correctness but so a wrong-key attempt can never accidentally be mistaken for "no key presented."
 
+**What exactly is `x_api_key`, what header name does it come from, and what value makes each branch run? Run for real against the live server, not guessed:**
+
+`x_api_key` is just a plain Python variable name — a parameter of the `secure_list` function, nothing more. It is NOT the header's name; it's where FastAPI *puts* the header's value once it's found it. The actual header name a caller must send is `X-API-Key` (with those exact hyphens) — FastAPI converts between the two automatically: the real HTTP header `X-API-Key` (hyphens, because HTTP headers conventionally use hyphens) becomes the Python parameter `x_api_key` (underscores, because hyphens aren't legal in a Python variable name). Whatever string value arrives in that header is what ends up *inside* `x_api_key` when the function runs — if the caller sends `X-API-Key: secret-admin-key`, then inside the function, `x_api_key` literally holds the string `"secret-admin-key"`, as if you'd written `x_api_key = "secret-admin-key"` yourself.
+
+Three real requests against the running demo app, varying only the header, prove exactly which value lands in which branch:
+
+*No `X-API-Key` header sent at all:*
+```
+curl -i http://127.0.0.1:8011/secure-accounts
+```
+```
+HTTP/1.1 401 Unauthorized
+content-type: application/json
+
+{"detail":"Missing X-API-Key header"}
+```
+Here, `x_api_key` is `None` (that's exactly what `Header(default=None)` means — "if this header is missing, give me `None` instead of erroring") — so the first `if x_api_key is None:` check is true, and the function stops at the 401 before even reaching the second check.
+
+*`X-API-Key: wrong-key` sent:*
+```
+curl -i http://127.0.0.1:8011/secure-accounts -H "X-API-Key: wrong-key"
+```
+```
+HTTP/1.1 403 Forbidden
+content-type: application/json
+
+{"detail":"This key is not allowed to view secure accounts"}
+```
+Now `x_api_key` holds the real string `"wrong-key"` — not `None` anymore, so the first check passes straight through — but it doesn't equal the hardcoded `"secret-admin-key"` the second check compares against, so it fails there instead, landing on 403.
+
+*`X-API-Key: secret-admin-key` sent — the one and only value that passes both checks:*
+```
+curl -i http://127.0.0.1:8011/secure-accounts -H "X-API-Key: secret-admin-key"
+```
+```
+HTTP/1.1 200 OK
+content-type: application/json
+
+[{"id":1,"holder":"Ravi Kumar","balance":5000.0},{"id":2,"holder":"Priya Shah","balance":3000.0}]
+```
+`x_api_key` now holds `"secret-admin-key"`, exactly matching the string the code compares it against — both `if` checks fail to trigger (there IS a key, and it IS the right one), so execution falls through to `return list(accounts.values())` and the real account data comes back.
+
+One more real detail worth confirming rather than assuming: HTTP header *names* (not their values) are case-insensitive, so sending the header as lowercase `x-api-key: secret-admin-key` instead of `X-API-Key: secret-admin-key` still works identically —
+```
+curl -i http://127.0.0.1:8011/secure-accounts -H "x-api-key: secret-admin-key"
+```
+```
+HTTP/1.1 200 OK
+```
+— same 200, because FastAPI (like HTTP itself) treats `X-API-Key` and `x-api-key` as the exact same header. The *value* `"secret-admin-key"` on the other side of the colon is compared with ordinary Python string equality (`!=`), which is fully case-sensitive — `"Secret-Admin-Key"` would NOT match and would still 403, only the header's own name ignores case, never the value you're actually checking.
+
 Simple version: every programmer eventually ships a real bug — this route isn't a feature at all, it exists purely to show you, on purpose and safely, what that actually looks like from the outside.
 
 ```python
