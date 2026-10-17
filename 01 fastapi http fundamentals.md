@@ -263,6 +263,77 @@ def create_account(account: AccountIn):
 ```
 `status_code=201` overrides FastAPI's default of 200 for this one route — convention is 201 for a POST that creates something, so the frontend can tell "created" apart from "just fetched." `account: AccountIn` is the request body — FastAPI reads the incoming JSON, runs it past the bouncer's checklist from above (this is exactly where the 422 in section 4 actually gets raised, before this line of code ever runs), and hands you a real Python object with real attributes (`account.holder`, `account.balance`) — no manual `json.loads()` anywhere in sight. Why `global next_id`? Because this function changes `next_id` (`next_id += 1`), and without telling Python "I mean the one outside this function," Python would quietly create a brand-new, separate `next_id` that only exists inside this one call and throw it away afterward — leaving the real counter outside never incremented. That's the same scoping rule the Python docs' `global` coverage already walked through, just showing up here inside a route.
 
+**Where does that "incoming JSON" actually come from, concretely?**
+
+Everything so far described what happens once a request has already arrived. It's worth pinning down exactly where that request itself comes from, and how you could send one yourself, right now, without needing a frontend at all. To make this concrete, this app was actually started for real with `uvicorn` (the stove, from earlier) on `127.0.0.1:8010` (`127.0.0.1` means "this same computer," `8010` is just the port number it happened to be listening on), and then sent real requests at it from three different directions.
+
+*1. The raw bytes a request actually is, captured with `curl -v` (a command-line tool for sending HTTP requests, with `-v` for "verbose" — show me everything, not just the answer):*
+
+```
+> POST /accounts HTTP/1.1
+> Host: 127.0.0.1:8010
+> User-Agent: curl/8.5.0
+> Accept: */*
+> Content-Type: application/json
+> Content-Length: 45
+>
+} [45 bytes data]
+< HTTP/1.1 201 Created
+< date: Sat, 17 Oct 2026 10:51:25 GMT
+< server: uvicorn
+< content-length: 49
+< content-type: application/json
+<
+{ [49 bytes data]
+```
+
+Lines starting with `>` are what was *sent*; lines starting with `<` are what came *back*. `Content-Type: application/json` is the header telling FastAPI "the body I'm about to send you is JSON — parse it that way" (this is exactly what lets FastAPI know to run it through `AccountIn`'s validation at all). `Content-Length: 45` just says how many bytes the body is, so the server knows when it's finished receiving it. Everything else (`User-Agent`, `Accept`, `Host`) is routine metadata `curl` adds automatically — a real browser or frontend library adds its own equivalents without you writing them by hand.
+
+*2. Sending that request with `curl` directly from a terminal — no frontend, no browser, nothing but a single command:*
+
+```
+curl -i -X POST http://127.0.0.1:8010/accounts \
+  -H "Content-Type: application/json" \
+  -d '{"holder": "Dev Patel", "balance": 1200.0}'
+```
+
+Real output:
+```
+HTTP/1.1 201 Created
+date: Sat, 17 Oct 2026 10:51:20 GMT
+server: uvicorn
+content-length: 46
+content-type: application/json
+
+{"id":3,"holder":"Dev Patel","balance":1200.0}
+```
+
+`-X POST` sets the method, `-H` adds a header, `-d` supplies the body — that's the entire recipe for sending any request by hand, for any route in this doc, any time you want to try something without a frontend. This is genuinely the fastest way to test a single endpoint while you're developing one.
+
+*3. The way your actual frontend would do this — a real Node `fetch` call, run for real against the same server:*
+
+```javascript
+const response = await fetch("http://127.0.0.1:8010/accounts", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ holder: "Frontend Caller", balance: 777.0 }),
+});
+
+console.log("status:", response.status);
+const body = await response.json();
+console.log("body:", body);
+```
+
+Real output:
+```
+status: 201
+body: { id: 5, holder: 'Frontend Caller', balance: 777 }
+```
+
+This is structurally identical to what `axios.post("/accounts", {...})` does in section 7, and to what `client.post("/accounts", json={...})` did throughout this whole doc via `TestClient` — `method`, `headers`, and `body` are the exact same three ingredients every single time, however the request happens to get sent. `JSON.stringify(...)` is JavaScript's equivalent of Python's `json.dumps()` — turning a real in-memory object into JSON text before it's sent, which is the client-side half of the "serialize"/"deserialize" pair discussed earlier in this section.
+
+One more option worth knowing about, without needing any of the above: FastAPI automatically builds an interactive page at `/docs` for any running app (mentioned back when `title=` was explained) — opening `http://127.0.0.1:8010/docs` in a browser while the server is running gives you a clickable "Try it out" button for every single route, where you can type in a body and fire a real request straight from the browser, no `curl` or code required. Worth opening once you have this running yourself.
+
 Simple version: this is the "correct this account's balance to this exact number" counter — like crossing out a typo on a form and writing the right number, not adding a new line underneath it.
 
 ```python
