@@ -222,7 +222,20 @@ def list_accounts(min_balance: float | None = Query(default=None)):
         results = [a for a in results if a["balance"] >= min_balance]
     return results
 ```
-The first check exists because "show me accounts with a balance of at least -5" makes no real-world sense — it's a business rule *we* chose to enforce ourselves, which is exactly why it's a 400 and not a 422 (FastAPI's own validation had nothing to do with rejecting it; see section 4). `accounts.values()` pulls every account out of the sticky-note board. `[a for a in results if a["balance"] >= min_balance]` is a **list comprehension** — plain Python shorthand for "build a new list by going through `results` one item at a time (`a`), and only keeping the ones where the condition after `if` is true." It's exactly the same idea as a `for` loop with an `if` check inside it that appends to a new list — just written on one line, which is an extremely common pattern in real Python code, not FastAPI-specific at all.
+The first check exists because "show me accounts with a balance of at least -5" makes no real-world sense — it's a business rule *we* chose to enforce ourselves, which is exactly why it's a 400 and not a 422 (FastAPI's own validation had nothing to do with rejecting it; see section 4).
+
+`accounts.values()` pulls every account out of the sticky-note board — worth seeing exactly what that actually gives you back, since it's not quite a plain list on its own:
+
+```
+accounts.values()
+dict_values([{'id': 1, 'holder': 'Ravi Kumar', 'balance': 5000.0}, {'id': 2, 'holder': 'Priya Shah', 'balance': 3000.0}])
+```
+
+Breaking that down: `.values()` on a dict gives you back only the values — not the keys (the account ids `1` and `2` are dropped here), just the two dictionaries that were stored under those keys. It doesn't come back as a plain `list` — it's a special object called a `dict_values` view, which just means "a live window onto the dict's current values" (if the dict changes later, this view reflects the change automatically — you don't need to call `.values()` again). It's printed with a `dict_values([...])` wrapper around it so you can see what type it is, but notice the actual content inside those square brackets is exactly the two account dicts, in the order they were inserted — one value per key in the dict, comma-separated, in insertion order, regardless of what type each value happens to be.
+
+That's why the code wraps it in `list(...)`: `list(accounts.values())` converts that special view into an ordinary Python list — `[{'id': 1, ...}, {'id': 2, ...}]` — which is what `results` actually becomes in `list_accounts()`, so the rest of the function (filtering, returning) can treat it like any normal list. It's a `list` only after that explicit `list(...)` wrap — on its own, `.values()` gives back the `dict_values` view, which behaves like a list you can loop over or print, but isn't technically a `list` object until you convert it.
+
+`[a for a in results if a["balance"] >= min_balance]` is a **list comprehension** — plain Python shorthand for "build a new list by going through `results` one item at a time (`a`), and only keeping the ones where the condition after `if` is true." It's exactly the same idea as a `for` loop with an `if` check inside it that appends to a new list — just written on one line, which is an extremely common pattern in real Python code, not FastAPI-specific at all.
 
 Whatever this function `return`s, FastAPI automatically **serializes** it to JSON and sends it back as the response body. "Serialize" just means "convert a real, in-memory Python object (a list of dicts, here) into plain text that can actually travel over a network" — the reverse of what happens to an incoming JSON body when it becomes a real Python/Pydantic object. You never call anything like `response.send()` yourself; the return value *is* the response, and FastAPI handles turning it into bytes on the wire.
 
