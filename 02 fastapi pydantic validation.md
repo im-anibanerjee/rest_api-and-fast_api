@@ -306,6 +306,41 @@ The `return self` at the end of `accounts_must_differ` matters here in exactly t
 ### Connecting back
 Use `@field_validator` for a rule about one field in isolation (doc 01's `holder` name check, or `balance >= 0`). Reach for `@model_validator(mode="after")` the moment a rule needs to compare two or more fields against each other — there's no way to express that kind of rule correctly with field-level validators alone.
 
+> **Follow-up question: if we are giving `Field` to any attribute of a class, is `field_validator` important to give for that attribute, or without it will also work? when to decide when to give and when not to give? if `Field()` is already adding the rule, then what is the use of `field_validator`?**
+>
+> These two aren't competing with each other, they're doing different jobs, and that's exactly why you'll often see both on the same field.
+>
+> **Simple version**
+> `Field(...)` is a fixed menu of ready-made checks — "is this number in range," "is this string long enough," "does this match a regex pattern." If your rule fits one of those exact shapes, `Field(...)` alone is enough, no `field_validator` needed. `@field_validator` exists for everything that *doesn't* fit that menu — a custom rule you have to write actual Python logic for, or a value you want to transform, not just check.
+>
+> **Real-life example**
+> Think of airport security as two separate stations. The metal detector at the gate is `Field(...)` — it checks one fixed thing ("does this set off an alarm, yes or no") the exact same way for every single person, no judgment involved. A human officer who pulls someone aside for a closer look because something about their documents doesn't add up is `field_validator` — a judgment call that needs actual reasoning, not just a fixed threshold. Most people only need the metal detector. Some people need both.
+>
+> **Real-world use case**
+> Look at `holder: str = Field(min_length=2, max_length=50)` plus its own `@field_validator("holder")` in the demo app above. `Field(min_length=2, max_length=50)` handles "is this a reasonable length" — a pure counting check, no judgment needed, so it's expressed declaratively. But "must only contain letters and spaces, no digits or symbols" has no matching keyword in `Field(...)` — there's no `Field(letters_only=True)` option. That rule needs real code: looping over characters and checking `ch.isalpha() or ch.isspace()`. On top of that, the validator also does something `Field(...)` can never do at all — it *changes* the value (`return value.title()`), turning `"ravi kumar"` into `"Ravi Kumar"`. `Field(...)` only ever says yes or no to the value you gave it; it can't hand back a different one.
+>
+> **Technical deep dive**
+> The two actually run in a fixed order, confirmed for real rather than just asserted. Take a field with both `Field(ge=0)` and a `@field_validator` on it:
+>
+> ```
+> 1) balance = -50 (fails Field(ge=0))
+>    result: greater_than_equal - Input should be greater than or equal to 0
+>    -> the field_validator function never even ran - its print statement never printed.
+>
+> 2) balance sent as the JSON string "5000" (Field's own lax-mode coercion happens first)
+>    -> field_validator received: 5000.0 <class 'float'>
+>    -> by the time field_validator sees it, it's already a real float, not the original string.
+>
+> 3) balance = 2,000,000 (passes Field(ge=0) fine, but the field_validator's own custom rule rejects it anyway)
+>    -> field_validator received: 2000000.0
+>    result: value_error - balance looks suspiciously high
+> ```
+>
+> So the real order is: `Field(...)`'s own constraints (range, length, pattern, type coercion) run first, as part of Pydantic's core validation — and if any of those fail, your `field_validator` function is skipped entirely, it never even gets called. Only once a value has survived every `Field(...)` constraint does Pydantic hand it to your `field_validator`, already coerced/cleaned up, for whatever extra custom logic you wrote. That's also why case 3 is interesting — `2,000,000` is a perfectly valid non-negative number, so `Field(ge=0)` is happy, but the `field_validator` applies its own separate business rule on top and still rejects it. They're two independent gates, stacked one after the other, not alternatives to each other.
+>
+> **Connecting back**
+> So, directly to the three questions above. `field_validator` is never *required* just because you used `Field(...)` — plenty of fields in this doc (`balance: float = Field(ge=0)` by itself, no validator at all) work completely fine with `Field(...)` alone, and that's the normal, common case. The decision rule is simple: start with `Field(...)` for anything that's really just a range, a length, a regex pattern, or a default value — it's simpler to write, and it runs in Pydantic's fast built-in core instead of your own Python code. Reach for `field_validator` only when the rule genuinely can't be written as one of those built-in keywords (letters-only, must-be-a-valid-email-domain-you-check-against-a-list, must-not-be-a-reserved-word, whatever your actual business rule is), or when you need to transform the value on the way in, not just approve or reject it. And the use of `field_validator` even when `Field(...)` is already there isn't redundancy — it's that `Field(...)` only covers one narrow menu of checks, and `field_validator` is the escape hatch for literally everything else, running as a second, later gate on a value that's already passed the first one.
+
 ## 6. Controlling what goes OUT: response_model
 
 ### Simple version
