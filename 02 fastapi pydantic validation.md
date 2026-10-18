@@ -142,6 +142,51 @@ def create_transfer(transfer: TransferRequest):
 
 `class TransferRequest(BaseModel):` is an ordinary model with three plain fields, plus one thing you haven't seen yet: `@model_validator(mode="after")` on `accounts_must_differ`. Unlike `@field_validator`, which only ever sees *one* field's value at a time, a `mode="after"` model validator runs once the whole model has already been built and gives you `self` — meaning this function can see every field at once (`self.from_account_id`, `self.to_account_id`) and check a rule that spans more than one of them. `return self` at the end matters for the same reason doc 01 flagged for `field_validator`: whatever a validator returns becomes the real result — a model validator in `mode="after"` has to return the (possibly modified) instance itself, not just "pass."
 
+> **Follow-up: explain this part in detail and in a simpler way** — "`@model_validator(mode="after")` on `accounts_must_differ`. Unlike `@field_validator`, which only ever sees one field's value at a time, a `mode="after"` model validator runs once the whole model has already been built and gives you `self` — meaning this function can see every field at once (`self.from_account_id`, `self.to_account_id`) and check a rule that spans more than one of them. `return self` at the end matters for the same reason doc 01 flagged for `field_validator`: whatever a validator returns becomes the real result — a model validator in `mode="after"` has to return the (possibly modified) instance itself, not just 'pass.'"
+>
+> **Simple version**
+> A normal Pydantic model just checks each field on its own — does `balance` look like a number, does `holder` look like a string, and so on, one field at a time. `@model_validator(mode="after")` is different: it waits until *every* field has already been checked and the object has already been built, and only then runs your function, handing you the whole finished object (that's what `self` is) so your function can compare fields against each other. "Return self" at the end just means: give that object back when you're done, unchanged (or changed, if you modified something) — don't give back nothing.
+>
+> **Real-life example**
+> Imagine a form that asks for a "start date" and an "end date." Each date field, checked on its own, is perfectly valid — "March 1st" is a real date, "March 5th" is a real date. But there's a separate rule that only makes sense once you have *both* answers in front of you: "end date must come after start date." You can't check that rule while you're only looking at one blank on the form — you need the whole filled-in form in your hands first. That's exactly the difference between `@field_validator` (checks one blank at a time) and `@model_validator(mode="after")` (checks the whole filled-in form at once).
+>
+> **Real-world use case**
+> In the transfer example, `from_account_id` and `to_account_id` are each perfectly valid integers on their own — `1` is fine, `2` is fine. The rule "these two must not be equal" can only be checked once both values exist together, which is exactly what `accounts_must_differ(self)` does: by the time it runs, `self` already has `self.from_account_id` and `self.to_account_id` both set, so it can compare them directly.
+>
+> **Technical deep dive**
+> Here's the order things actually happen in, step by step:
+>
+> 1. Pydantic validates `from_account_id`, `to_account_id`, and `amount` individually first — same as always.
+> 2. Once all three pass, Pydantic builds the real `TransferRequest` object with those values already sitting on it as attributes.
+> 3. *Then*, because this is `mode="after"`, Pydantic calls `accounts_must_differ`, passing in that already-built object as `self` — so `self.from_account_id` inside the function is just normal attribute access on a normal object, nothing special.
+> 4. Whatever `accounts_must_differ` returns becomes the official final result of building this model. If you return `self`, the object you were just handed is returned as-is, so nothing changes and everything downstream works normally.
+>
+> Now here's the part that makes `return self` matter, not just as a style choice: a Python function with no explicit `return` statement at the end automatically returns `None`. So if you write the `if self.from_account_id == self.to_account_id: raise ValueError(...)` check but forget to add `return self` afterward, your function's real, actual return value is `None` — and Pydantic takes you at your word. This was run for real to show exactly what breaks:
+>
+> ```
+> # the validator with "return self" deleted on purpose
+> TransferRequestBroken.model_validate({"from_account_id": 1, "to_account_id": 2, "amount": 500})
+>
+> result: None
+> type(result): <class 'NoneType'>
+>
+> result.model_dump()
+> error: AttributeError("'NoneType' object has no attribute 'model_dump'")
+> ```
+>
+> The whole `TransferRequest` object — every field, `from_account_id`, `to_account_id`, `amount`, all of it — gets silently thrown away and replaced with `None`, even though the input was completely valid and should have succeeded. And sending this same broken model through a real FastAPI route, the same way this doc's demo app does, is what actually crashes the request:
+>
+> ```
+> POST /transfers {"from_account_id": 1, "to_account_id": 2, "amount": 500}
+> status: 500
+> Internal Server Error
+> ```
+>
+> A perfectly valid, correctly-filled-out transfer request causes a server crash, purely because one word (`return self`) was left off the bottom of the function.
+>
+> **Connecting back**
+> This is the exact same category of bug as interview question 7 below, and the exact same bug already hit for real on `@field_validator` in doc 01's Q2/Q4 (`return value` missing, field silently nulled). The pattern is identical both times: whatever a validator function returns becomes the real, final value Pydantic uses — not "pass/fail," an actual replacement value. `@field_validator` replaces one field's value with whatever it returns; `@model_validator(mode="after")` replaces the *entire object* with whatever it returns. Forgetting the return statement doesn't mean "the check didn't run" — it means "the check ran, and then quietly destroyed everything by returning `None` instead of the thing you actually wanted to keep."
+
 `@app.post("/accounts", status_code=201, response_model=AccountOut)` introduces `response_model=AccountOut` — this is the piece that actually enforces the `AccountOut`/`AccountIn` split. Even though the route's own `return new_account` includes every key from the input, FastAPI runs that return value back through `AccountOut` before sending it to the client, and `AccountOut` has no `internal_notes` field to put it in — so it's silently dropped. More on exactly why that matters in section 6.
 
 `@app.post("/accounts/strict", ...)` and `@app.post("/transfers")` are ordinary routes with no new mechanics of their own — they exist purely to give `StrictAccountIn` and `TransferRequest` something real to be called through.
