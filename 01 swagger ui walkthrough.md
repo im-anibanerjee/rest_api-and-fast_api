@@ -79,13 +79,13 @@ Everything in this section was run against the unmodified demo app from doc 01, 
 
 ### Overview
 
-![Swagger UI overview](01 swagger ui walkthrough_images/demo-app/01-overview.png)
+![Swagger UI overview](diagrams/swagger_overview.png)
 
 Title "Demo Accounts API," version `0.1.0`, `OAS 3.1` badge, the `/openapi.json` link, then every route from doc 01's demo app collapsed into its colored bar: blue `GET /accounts`, blue `GET /accounts/{account_id}`, green `POST /accounts`, orange `PUT /accounts/{account_id}`, red `DELETE /accounts/{account_id}`, blue `GET /secure-accounts`, blue `GET /boom`.
 
 ### Schemas, expanded
 
-![Schemas section](01 swagger ui walkthrough_images/demo-app/02-schemas.png)
+![Schemas section](diagrams/swagger_schemas.png)
 
 `AccountIn` (`holder: string`, `balance: number`, both required) and `AccountUpdate` (`balance: number`, required) — the two request-body models this app defines. This is a direct rendering of:
 
@@ -100,79 +100,79 @@ class AccountUpdate(BaseModel):
 
 ### GET /accounts — expanding it
 
-![GET /accounts expanded](01 swagger ui walkthrough_images/demo-app/03-get-accounts-expanded.png)
+![GET /accounts expanded](diagrams/get_accounts_expanded.png)
 
 Clicked the blue bar. Parameters tab shows one optional query parameter, `min_balance` (no red `*`, because `Query(default=None)` makes it optional) — no path parameters, because this route's path is just `/accounts` with nothing to fill in.
 
 ### Clicking "Try it out"
 
-![Try it out clicked](01 swagger ui walkthrough_images/demo-app/04-get-accounts-tryitout.png)
+![Try it out clicked](diagrams/get_accounts_tryitout.png)
 
 The `min_balance` box is now a real, editable text input, and **Execute** has appeared.
 
 ### Filling it in, before executing
 
-![min_balance filled with 4000](01 swagger ui walkthrough_images/demo-app/05-get-accounts-filled.png)
+![min_balance filled with 4000](diagrams/get_accounts_filled.png)
 
 Typed `4000` into the box — nothing has been sent yet, this is still just local typing in the browser.
 
 ### After Execute — real response
 
-![GET /accounts response](01 swagger ui walkthrough_images/demo-app/06-get-accounts-response.png)
+![GET /accounts response](diagrams/get_accounts_response.png)
 
 Pressed Execute. Curl shows `curl -X 'GET' 'http://127.0.0.1:8030/accounts?min_balance=4000' -H 'accept: application/json'` — note the query string got appended automatically from what was typed. Server response: `200`, body is a JSON array containing only the one seed account whose balance is `>= 4000` (`"Ravi Kumar"`, balance `5000.0`) — `"Priya Shah"` at `3000.0` was correctly filtered out. This is real proof the `min_balance` filtering logic in `list_accounts()` works.
 
 ### POST /accounts — filling in a request body
 
-![POST /accounts body filled](01 swagger ui walkthrough_images/demo-app/07-post-accounts-filled.png)
+![POST /accounts body filled](diagrams/post_accounts_filled.png)
 
 Expanded `POST /accounts`, clicked Try it out, then clicked directly into the Example Value textarea and replaced it with a real body: `{"holder": "Dev Patel", "balance": 1200}`.
 
 ### POST /accounts — real response
 
-![POST /accounts response](01 swagger ui walkthrough_images/demo-app/08-post-accounts-response.png)
+![POST /accounts response](diagrams/post_accounts_response.png)
 
 Execute pressed. Server response: `201`, body `{"id": 3, "holder": "Dev Patel", "balance": 1200}` — a brand-new account, genuinely created and assigned the next available id (`3`, continuing from the two seed accounts), exactly the way `create_account()` is written to behave.
 
 ### POST /accounts — triggering a real 422
 
-![POST /accounts 422](01 swagger ui walkthrough_images/demo-app/09-post-accounts-422.png)
+![POST /accounts 422](diagrams/post_accounts_422.png)
 
 Same endpoint, this time the body was edited down to `{"holder": "No Balance Field"}` — missing the required `balance` field entirely — and Execute pressed again. Server response: `422`, with a body shaped exactly like the `HTTPValidationError`/`ValidationError` schemas from section 2 — `"loc": ["body", "balance"]` pinpoints exactly which field was the problem, `"msg": "Field required"` says why. This 422 was never written by hand anywhere in `app.py` — FastAPI generates it automatically the instant Pydantic validation fails, before your function body even runs.
 
 ### GET /accounts/{account_id} — a real 404
 
-![GET account 404](01 swagger ui walkthrough_images/demo-app/10-get-account-404.png)
+![GET account 404](diagrams/get_account_404.png)
 
 `account_id` filled in with `999`, which doesn't exist. Server response: `404`, body `{"detail": "Account not found"}` — this is the literal string from `raise HTTPException(status_code=404, detail="Account not found")` in `get_account()`, confirming the 404 path is not just declared in the Responses table, it's the real thing that happens.
 
 ### GET /secure-accounts — expanded
 
-![secure-accounts expanded](01 swagger ui walkthrough_images/demo-app/11-secure-expanded.png)
+![secure-accounts expanded](diagrams/secure_accounts_expanded.png)
 
 One parameter, `x-api-key`, type `string | null`, location `(header)` — not required, because the route reads it as `x_api_key: str | None = Header(default=None)` and does its own manual check rather than FastAPI rejecting the request outright for a missing header.
 
 ### GET /secure-accounts — Try it out, no key entered
 
-![secure-accounts try it out](01 swagger ui walkthrough_images/demo-app/12-secure-tryitout.png)
+![secure-accounts try it out](diagrams/secure_accounts_tryitout.png)
 
 Editable `x-api-key` box, left empty on purpose, about to Execute.
 
 ### GET /secure-accounts — 401, no key sent
 
-![secure-accounts 401](01 swagger ui walkthrough_images/demo-app/13-secure-401.png)
+![secure-accounts 401](diagrams/secure_accounts_401.png)
 
 Curl shows no `-H 'x-api-key: ...'` line at all — the header was genuinely never sent. Server response: `401`, `{"detail": "Missing X-API-Key header"}` — this is `secure_list()`'s first check (`if x_api_key is None`) firing for real.
 
 ### GET /secure-accounts — 403, wrong key sent
 
-![secure-accounts 403](01 swagger ui walkthrough_images/demo-app/14-secure-403.png)
+![secure-accounts 403](diagrams/secure_accounts_403.png)
 
 This time `x-api-key` was filled in with `wrong-key` before Execute. Curl now shows `-H 'x-api-key: wrong-key'`. Server response: `403`, `{"detail": "This key is not allowed to view secure accounts"}` — the second check in `secure_list()` (`if x_api_key != "secret-admin-key"`), proving the 401-vs-403 split from doc 01's section on this is real and not just a design on paper.
 
 ### GET /secure-accounts — 200, correct key sent
 
-![secure-accounts 200](01 swagger ui walkthrough_images/demo-app/15-secure-200.png)
+![secure-accounts 200](diagrams/secure_accounts_200.png)
 
 `x-api-key` filled with `secret-admin-key`. Server response: `200`, full JSON array of every account, including the `"Dev Patel"` one created earlier in this same walkthrough with `POST /accounts` — proof that these are not isolated calls, they're all hitting the same running in-memory `accounts` dict, in order, exactly as a real session of using this app would.
 
@@ -182,37 +182,37 @@ These are screenshots you captured yourself, from your own `01 fastapi http fund
 
 ### Overview and the endpoint list
 
-![your overview](01 swagger ui walkthrough_images/your-code/01-overview-and-endpoints.png)
+![your overview](diagrams/your_overview_endpoints.png)
 
 Same "Demo Accounts API" title (you kept `FastAPI(title="Demo Accounts API")` from the doc), same OAS 3.1 badge — and the `PATCH /accounts/{account_id}/holder` bar is your own Q1 endpoint, not something from doc 01's demo app. This confirms the page really is being generated fresh from *your* file, not some cached copy of the doc's version.
 
 ### GET /accounts/{account_id} — expanded, read-only
 
-![your GET /accounts/{id}](01 swagger ui walkthrough_images/your-code/02-get-account-expanded.png)
+![your GET /accounts/{id}](diagrams/your_get_account_expanded.png)
 
 Same shape as section 3's `GET` walkthrough — one required path parameter, `account_id`, type `integer`. Still in read-only mode here (Try it out not yet clicked) — box is greyed out, no Execute button yet.
 
 ### PATCH /accounts/{account_id}/holder — a real executed call
 
-![your PATCH holder response](01 swagger ui walkthrough_images/your-code/03-patch-holder-executed.png)
+![your PATCH holder response](diagrams/your_patch_holder_executed.png)
 
 This is a completed run of your Q1 endpoint: `account_id` was `2`, Execute was pressed, and the real response came back — `201`, body `{"id": 2, "holder": "Anirruddha", "balance": 3000}`. That status code is correct because of `@app.patch(..., status_code=201)` in your file, and the holder name changing to `"Anirruddha"` no matter what account you target is exactly what you predicted and explained in your Q1 answer (the hardcoded `accounts[account_id]['holder'] = 'Anirruddha'` line) — this screenshot is live proof of that prediction.
 
 ### PUT /accounts/{account_id} — Example Value
 
-![your PUT balance example](01 swagger ui walkthrough_images/your-code/04-put-balance-example-value.png)
+![your PUT balance example](diagrams/your_put_balance_example.png)
 
 Still in read-only mode, showing the default Example Value `{"balance": 0}` for your `AccountUpdate` model's one field. Worth clicking the "Schema" tab next to "Example Value" here (not shown in this screenshot, but it's the same tab described in section 2) — for your file specifically, it will show `balance* number ≥ 0`, which is the visual rendering of your `Field(ge=0)` constraint. That `≥ 0` badge is a useful self-check: it tells you, just by looking at the page, that FastAPI/Pydantic will reject a negative balance *before* your own `not_neg_balanace` validator ever gets a chance to run — more on why that matters below, in section 5.
 
 ### Schemas — your models
 
-![your schemas](01 swagger ui walkthrough_images/your-code/05-schemas.png)
+![your schemas](diagrams/your_schemas.png)
 
 `AccountUpdate` (`balance* number ≥ 0`) and `Bonus` (`divisor* number`, no constraint badge — because, unlike `balance`, `divisor` was never given a `Field(...)` on the model, only the custom `@field_validator`), plus the usual auto-generated `HTTPValidationError`/`ValidationError` pair.
 
 ### POST /accounts/{account_id}/apply-bonus — a parameter worth noticing
 
-![your apply-bonus params](01 swagger ui walkthrough_images/your-code/06-apply-bonus-dead-param.png)
+![your apply-bonus params](diagrams/your_apply_bonus_dead_param.png)
 
 Look closely at the Parameters table here: alongside the required `account_id` path parameter, there's a second one — `staus_code`, type `any`, location `(query)`, default value `201`. This is not a typo in this doc; it's a real, visible symptom of a typo in your own code. Your function signature is:
 
@@ -224,7 +224,7 @@ def divide_balance(account_id:int, payload:Bonus, staus_code=201):
 
 ### DELETE /accounts/{account_id}
 
-![your DELETE endpoint](01 swagger ui walkthrough_images/your-code/07-delete-endpoint.png)
+![your DELETE endpoint](diagrams/your_delete_endpoint.png)
 
 Collapsed red bar, same shape as section 3 — nothing unusual here, just confirming your own `DELETE` route renders with the same red-for-DELETE color convention as every other FastAPI project.
 
