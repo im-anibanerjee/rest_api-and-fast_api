@@ -777,6 +777,54 @@ Attempt these yourself first — copy the demo app from section 2 into your own 
 
 5. **Explain the 401 vs 403 decision tree in your own words**, in writing — not just "401 is this, 403 is that," but walking through the actual order `secure_list()` checks things in, and why swapping that order would be a real security mistake (what would a wrong-key request incorrectly reveal if the key check ran before the "is there a key at all" check?).
 
+### "The questions that you gave to solve, how to run the code?"
+
+That was the real question asked after seeing the 5 practice questions above, and it's worth keeping the full answer here rather than only in chat, since every future practice-question set in this series needs the same setup.
+
+**1. Open a terminal and go to the repo folder.**
+```
+cd /d "D:\interview prep\fast_api"
+```
+(The `/d` matters — plain `cd` to a different drive letter in Windows Command Prompt silently fails to actually switch drives.)
+
+**2. Install FastAPI and the two things needed to actually run it.** Python itself is already set up from the earlier topics, but FastAPI is a new library, not installed on this machine yet:
+```
+pip install fastapi uvicorn
+```
+`uvicorn` is the "stove" explained in section 2 — the thing that actually runs a FastAPI app as a real, reachable server. This install only needs to happen once.
+
+**3. Create a file with the demo app code**, e.g. `demo.py`, in that same folder — copy in the code from section 2 of this doc, then make whatever change the practice question asks for (a new endpoint, a validation rule, etc.).
+
+**4. Two different ways to actually run it and see real output — pick whichever fits the question:**
+
+**Option A — the simplest: add a `TestClient` block and just run the file.** This is exactly how every real output in this doc was captured. At the bottom of `demo.py`, add:
+```python
+if __name__ == "__main__":
+    from fastapi.testclient import TestClient
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post("/accounts", json={"holder": "Test", "balance": 100.0})
+    print("status:", response.status_code)
+    print("body:", response.json())
+```
+Then just run:
+```
+python demo.py
+```
+No server, no network, no separate terminal needed — it prints the real result immediately. Best for quickly checking one or two calls (practice questions 2, 3, and 4 fit this well).
+
+**Option B — a real running server**, if the question involves something like headers, or it's just easier to poke at it like a real API. In the terminal:
+```
+uvicorn demo:app --reload
+```
+(`demo` is the filename without `.py`; `app` is the FastAPI object's variable name inside it — use your own file/variable names if different.) This starts a real server and keeps running — leave that terminal open. Then, in a second terminal (or a browser), send real requests the same way shown earlier in this doc:
+```
+curl -i -X POST http://127.0.0.1:8000/accounts -H "Content-Type: application/json" -d "{\"holder\": \"Test\", \"balance\": 100.0}"
+```
+(Windows Command Prompt needs the escaped `\"` quotes like that, unlike the Linux `curl` examples earlier in this doc.) Or just open `http://127.0.0.1:8000/docs` in a browser for the clickable "Try it out" version — no `curl` needed at all. Press `Ctrl+C` in the server's terminal to stop it when done.
+
+Use Option A for quick single checks, Option B when the question specifically involves things like headers, or just to see it behave like a real API end to end.
+
 ---
 
 *When you've worked through these, share your code and the real output you captured — that's more useful than me just confirming you understood the diagrams. Once this one's checked off, say "next" and I'll build the next doc.*
