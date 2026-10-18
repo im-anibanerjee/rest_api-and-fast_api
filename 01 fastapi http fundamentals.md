@@ -204,6 +204,95 @@ class AccountUpdate(BaseModel):
 ```
 These two classes are that bouncer's checklist. Doc 02 goes deep on what `BaseModel` is actually doing; the minimum you need now is: declaring a class like this tells FastAPI "a valid request body for this route must have a `holder` that's a string and a `balance` that's a number — nothing missing, nothing extra, by default." Why two separate checklists instead of one? Because creating a new account and updating an existing one need different paperwork — creating needs a name AND a balance (`AccountIn`), but updating a balance only needs the new number, not the holder's name all over again (`AccountUpdate`). Using the smaller checklist where it fits is just not asking for information you don't need.
 
+**Going further: adding your own rules on top of that checklist**
+
+Simple version: on their own, `AccountIn` and `AccountUpdate` only check the *type* of each field — is `balance` actually a number, is `holder` actually text. "Validation" on top of that means adding your own rules — "`balance` can't be negative," "`holder` can't be just one letter" — so bad data gets rejected with a clear error before `create_account()`'s own code ever runs.
+
+Real-life example: it's like a bouncer at a door checking ID. The basic check is just "is this a real ID" (Pydantic's default type-checking). Extra validation is the bouncer adding more rules — "has to say the person is over 21," "name has to match the reservation" — before letting anyone in.
+
+Real-world use case: this is exactly the kind of thing you'd add to your own `AccountIn` model so someone can't create an account with a balance of `-500`, or a holder name like `"R"` or `"Ravi123"`.
+
+Technical deep dive — there are two different ways to add a rule, and this one example uses both:
+
+```python
+from pydantic import BaseModel, Field, field_validator
+
+class AccountIn(BaseModel):
+    # field(...) adds simple built-in rules, checked automatically
+    holder: str = Field(min_length=2, max_length=50)
+    balance: float = Field(ge=0)   # ge = "greater than or equal to" 0, blocks negative balances
+
+    # field_validator lets you write your own custom rule in plain python
+    @field_validator("holder")
+    @classmethod
+    def holder_must_be_letters_and_spaces(cls, value: str) -> str:
+        # runs after the basic type check passes, value is already a confirmed string here
+        # return value to accept it, raise valueerror to reject it
+        if not all(ch.isalpha() or ch.isspace() for ch in value):
+            raise ValueError("holder name must only contain letters and spaces")
+        return value.title()  # you can also clean up the value here, not just check it
+```
+
+What every line of this is actually doing: `from pydantic import BaseModel, Field, field_validator` brings in two more tools beyond `BaseModel` — `Field` is for simple built-in rules, `field_validator` is for rules you write yourself. `holder: str = Field(min_length=2, max_length=50)` still says "`holder` must be a string" (same as before), but now also says "and it must be between 2 and 50 characters long" — `Field(...)` is just a way of attaching extra, built-in constraints onto a type hint instead of only declaring the type. `balance: float = Field(ge=0)` does the same thing for the number — `ge` is short for "greater than or equal to," so `Field(ge=0)` means "0 is allowed, anything below 0 is not." Both of these are checked automatically by Pydantic itself — you don't write any `if` statements for them.
+
+`@field_validator("holder")` is a decorator that says "run the function right below this on the `holder` field specifically, after its basic type check has already passed." `@classmethod` is required syntax for how Pydantic calls this function internally — it means the function receives the class itself (`cls`) as its first argument instead of a specific instance, which matters here because this code runs during validation, before any actual `AccountIn` object exists yet. `def holder_must_be_letters_and_spaces(cls, value: str) -> str:` is the function itself — `value` is whatever the caller sent for `holder`, already confirmed to be a string and already within the length range from `Field(...)` above; the function's job is to look at that string and decide if it's acceptable. `if not all(ch.isalpha() or ch.isspace() for ch in value):` walks through every single character (`ch`) in the string and checks "is this letter, or is this a space" — `all(...)` is true only if every character passes that check; the `not` flips it, so this `if` fires the moment even one character is something else (a digit, a hyphen, anything). `raise ValueError("holder name must only contain letters and spaces")` is how you reject the value — raising `ValueError` inside a validator is Pydantic's signal to turn this into a clean 422 response, with your message included, instead of letting bad data through. `return value.title()` only runs if the check above didn't reject the value — returning a value from a validator doesn't just approve it, it *replaces* it; `.title()` capitalizes the first letter of each word, so `"ravi kumar"` becomes `"Ravi Kumar"` on the way in, without you writing a separate cleanup step anywhere else.
+
+I ran this for real against the account shape above and captured the actual responses — nothing here is guessed:
+
+```
+--- valid input: {"holder": "ravi kumar", "balance": 500} ---
+status: 200
+body: {
+  "id": 99,
+  "holder": "Ravi Kumar",
+  "balance": 500.0
+}
+
+--- negative balance: {"holder": "Ravi Kumar", "balance": -50} ---
+status: 422
+body: {
+  "detail": [
+    {
+      "type": "greater_than_equal",
+      "loc": ["body", "balance"],
+      "msg": "Input should be greater than or equal to 0",
+      "input": -50,
+      "ctx": {"ge": 0.0}
+    }
+  ]
+}
+
+--- holder too short: {"holder": "R", "balance": 100} ---
+status: 422
+body: {
+  "detail": [
+    {
+      "type": "string_too_short",
+      "loc": ["body", "holder"],
+      "msg": "String should have at least 2 characters",
+      "input": "R",
+      "ctx": {"min_length": 2}
+    }
+  ]
+}
+
+--- holder has digits: {"holder": "Ravi123", "balance": 100} ---
+status: 422
+body: {
+  "detail": [
+    {
+      "type": "value_error",
+      "loc": ["body", "holder"],
+      "msg": "Value error, holder name must only contain letters and spaces",
+      "input": "Ravi123",
+      "ctx": {"error": {}}
+    }
+  ]
+}
+```
+
+Notice the first response: `"holder": "ravi kumar"` was sent in lowercase, but it came back as `"Ravi Kumar"` — that's `return value.title()` actually changing the stored data, not just checking it. And every rejection, whether it came from `Field(...)` or from the custom `field_validator`, comes back as the same `422` you already know from the missing-field case above — these just give you more reasons to trigger that same path, with your own message attached when it's your own rule (`"holder name must only contain letters and spaces"`) instead of Pydantic's default one.
+
 **Every route — what it's actually for, what triggers it, and what each line does:**
 
 Simple version: you need a "look up a group of customers" counter at the bank, and sometimes the customer wants to filter — "only show me accounts with at least ₹4000 in them" — rather than being handed every single account and having to scan through them by hand.
