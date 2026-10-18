@@ -777,9 +777,7 @@ Attempt these yourself first — copy the demo app from section 2 into your own 
 
 5. **Explain the 401 vs 403 decision tree in your own words**, in writing — not just "401 is this, 403 is that," but walking through the actual order `secure_list()` checks things in, and why swapping that order would be a real security mistake (what would a wrong-key request incorrectly reveal if the key check ran before the "is there a key at all" check?).
 
-### "The questions that you gave to solve, how to run the code?"
-
-That was the real question asked after seeing the 5 practice questions above, and it's worth keeping the full answer here rather than only in chat, since every future practice-question set in this series needs the same setup.
+### How to run the practice code and test
 
 **1. Open a terminal and go to the repo folder.**
 ```
