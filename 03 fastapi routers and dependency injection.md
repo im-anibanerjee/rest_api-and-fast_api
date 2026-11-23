@@ -4,6 +4,55 @@ This is doc 3 of the FastAPI series, picking up right after doc 02's deep dive i
 
 Goal of this doc: stop thinking of `Depends()` as "a thing you occasionally see in FastAPI tutorials" and start seeing routers and dependencies as the two tools that let you organize a growing API — splitting *where* routes live, and sharing *what runs before* a route, without copy-pasting the same checks into every function.
 
+> **Follow-up: these two ideas didn't land — explain "splitting routes across routers" and "sharing logic across routes with dependency injection (`Depends()`)" in much more detail and in a very simple way, like every other confusing part in this series.**
+
+## Thing 1: "splitting routes across routers"
+
+### Simple version
+A "route" is just one single rule your API knows: "when someone visits this exact web address with this exact method (GET, POST, etc.), run this one function." Every FastAPI app built so far (doc 01, doc 02) wrote every single one of these rules, one after another, in one file, all stuck under the same `app` object. "Splitting routes across routers" just means: instead of writing all your rules in one giant file, you group related rules together into their own smaller files, and then connect those smaller files back to the main one.
+
+### Real-life example
+Imagine you're organizing a house that currently has everything — clothes, dishes, tools, books — dumped into one single room. You can technically still find things, but it's a mess, and it gets worse every time you buy something new. So instead, you make separate rooms: a bedroom for clothes, a kitchen for dishes, a garage for tools. Each room is still part of the same house — you haven't built a second house — you've just decided "clothes-related stuff lives here, kitchen-related stuff lives there." A router is one of those rooms. It's not a new building; it's a labeled section of the same one house.
+
+### Real-world use case
+In the actual demo app: every rule about accounts (`create_account`, `get_account`, `list_accounts`) got moved into its own file, `accounts.py`. Every rule about transfers (`create_transfer`) got moved into its own file, `transfers.py`. Each of those files has its own small `router` object — think of it as "the box these rules get packed into" — and then `main.py` has exactly two lines that say "take the accounts box, and the transfers box, and plug them both into the real app." That's it. Nothing more mysterious than: decide which rules belong together, put them in their own file, then plug that file's box into the main app.
+
+### Technical deep dive
+Mechanically, here's the whole sequence, step by step, with no skipped steps:
+1. In `accounts.py`, you write `router = APIRouter(...)`. This creates an empty box. It is not connected to anything yet — if you ran your server right now with only this, none of these routes would actually work, because this box isn't plugged in.
+2. Still in `accounts.py`, every route you write — `@router.get(...)`, `@router.post(...)` — gets added into that box, not onto the real app.
+3. In `main.py`, you write `app.include_router(accounts.router)`. This is the literal "plug the box into the house" step. Before this line runs, the routes inside that box are invisible to anyone using your API. After this line runs, they work exactly like any normal route.
+4. You do the exact same thing for `transfers.py`'s box.
+
+So the entire idea of "routers" is just: write groups of related routes in their own file, inside a box (`APIRouter()`), then plug each box into the real app with one line (`include_router`). Nothing about how an individual route works has changed at all — `@router.get(...)` behaves exactly like `@app.get(...)` always did; it's purely about *where you physically write the code* and *how it gets reconnected*.
+
+### Connecting back
+So "splitting routes across routers" is not a new way of writing a single route — it's a new way of *organizing many routes* once you have too many to comfortably keep in one file. Nothing changes about how any one route works; only where it physically lives, and the one extra step (`include_router`) needed to reconnect it.
+
+## Thing 2: "sharing logic across routes with dependency injection (`Depends()`)"
+
+### Simple version
+Sometimes, before a route's actual job can run, something needs to be checked or prepared first — "does this account exist," "did they send a valid password," "what page of results did they ask for." If more than one route needs the exact same check, you'd normally have to copy-paste that same checking code into every route that needs it. Dependency injection is a way to write that checking code *once*, in its own separate function, and then just tell FastAPI "run this first, automatically, before this route" — using `Depends(...)` — instead of pasting the same code over and over.
+
+### Real-life example
+Think about starting a new job. On your very first day, HR checks your ID, verifies your paperwork, and sets you up in the system — once. After that, you don't re-do that whole process every single time you walk into a different department. Each department just trusts that "HR already checked this person, here they are, already verified." Dependency injection is that HR step: a check written once, that every route who needs it can just ask for, instead of each department re-inventing its own ID-checking process from scratch.
+
+### Real-world use case
+In the demo app, `get_account_or_404` is exactly this. Three different routes (`get_account`, `update_balance`, and anything else that needs one specific account) all need to answer the same question first: "does this account ID actually exist, and if not, send back a 404." Instead of writing that same `if account not found: error` check inside all three route functions, it's written once, as its own function, and each route just says `account: dict = Depends(get_account_or_404)` in its parameter list. FastAPI sees that, runs `get_account_or_404` by itself first, and only calls your actual route function afterward, handing it the real account it already found.
+
+### Technical deep dive
+Here's the literal mechanical sequence, with no steps skipped:
+1. You write a normal Python function, `get_account_or_404`, that does one specific job — check something, and either raise an error or return a result.
+2. In a route's own parameter list, you write `something = Depends(get_account_or_404)`. This is the actual instruction to FastAPI: "before you call this route, call `get_account_or_404` first."
+3. When a real request comes in, FastAPI sees that `Depends(...)`, calls `get_account_or_404` on its own, and waits for it to either raise an error (in which case your route never even runs) or return a value.
+4. If it returned a value, FastAPI hands that value to your route as the parameter you named — in this case, `account`.
+5. Your route's own code never has to perform the check itself. It just trusts that if its own body is running at all, the check already passed.
+
+The actual word "Depends" is just a plain Python function — there's no special syntax happening. Writing `Depends(get_account_or_404)` as a parameter's default value is simply the specific spot FastAPI looks for this instruction.
+
+### Connecting back
+So dependency injection isn't some separate, exotic FastAPI feature — it's the direct answer to "I don't want to copy-paste this same check into five different routes." You write the check once, as its own function, and `Depends(...)` is the one-word instruction that tells FastAPI "run this before the route, every time this route is called."
+
 ## 1. Why split into routers at all
 
 ### Simple version
