@@ -38,6 +38,26 @@ Routers don't add any new capability FastAPI didn't already have — every route
 
 This builds on doc 02's Accounts domain, simplified slightly (holder + balance only, no nested address/account_type) so the file split and the dependency logic are the clear focus. Four files:
 
+### The folder layout these four files live in
+
+Before looking at any code, here's the actual folder structure being built — this matters because the code below only works if the files sit exactly here, and nothing about this layout was shown before now:
+
+```
+fast_api/
+    app/
+        __init__.py
+        main.py
+        dependencies.py
+        routers/
+            __init__.py
+            accounts.py
+            transfers.py
+```
+
+`app/` holds `main.py` and `dependencies.py` directly, and a `routers/` folder sits inside `app/` holding `accounts.py` and `transfers.py`. That nesting is exactly what makes `from app.dependencies import ...` and `from app.routers.accounts import ...` valid later — the dots in `app.routers.accounts` are literally walking down this folder structure, `app/routers/accounts.py`, one slash at a time.
+
+The two `__init__.py` files are completely empty — open one, there's nothing inside it. Historically, their entire job was to tell Python "this folder isn't just a loose pile of scripts, it's an importable package" — without one, older Python versions would refuse `from app.dependencies import ...` entirely. Modern Python (3.3 onward) relaxed this and can actually import a plain folder without an `__init__.py` too (verified this directly rather than assuming it) — but keeping an empty one in every package folder is still the overwhelmingly common real-world convention, including in this demo app, because it's explicit and some tools still expect it. So: create the two empty files exactly where the tree above shows them, and don't worry about them beyond that — they do nothing active, they're just a marker.
+
 ```python
 # app/dependencies.py
 """
@@ -217,6 +237,66 @@ app = FastAPI(title="Demo Accounts API v3 - routers & dependency injection")
 app.include_router(accounts.router)
 app.include_router(transfers.router)
 ```
+
+### What every new piece is actually doing, and why you'd bother writing it
+
+**In `app/dependencies.py`:**
+
+`from fastapi import Header, HTTPException, Query` imports three things used across this file. `Header` reads a value out of the incoming HTTP request's headers — the same idea as `Query` reading one out of the URL's query string, just pointed at a different part of the request.
+
+`db_log: list[str] = []` creates one plain Python list the moment this file is first imported. Because it's written at the top level of the module — not inside any function — every request, from every route in the whole app, shares this exact same list. That's deliberate; it's what lets section 5 and section 8 show a running log across multiple calls.
+
+`VALID_API_KEY = "topsecret123"` is a plain constant standing in for a real secret. A real app would read this from an environment variable or a secrets manager, never hardcode it — a hardcoded string is enough to demonstrate the mechanism itself.
+
+`call_count = {"n": 0}` looks like an odd way to store one number — a dict with a single key, `"n"` — instead of just `call_count = 0`. The reason is a Python scoping rule: inside `count_call()` below, `call_count["n"] += 1` is modifying the dict that already exists, which is always allowed from inside a function. Writing `call_count += 1` on a plain int, instead, would try to create a brand-new *local* variable named `call_count` inside the function, which Python blocks unless you add a `global call_count` line first. Wrapping the number in a dict sidesteps needing `global` at all — a small trick that shows up often in real code.
+
+`def verify_api_key(x_api_key: str | None = Header(default=None)) -> str:` — `Header(default=None)` works exactly like the `Query(...)`/`Field(...)` defaults already used before, except it tells FastAPI "find this value among the request's headers," not the query string or body. FastAPI also does one more thing automatically here: it looks for a header literally named `X-API-Key` (capitalized, hyphenated) even though the Python parameter is named `x_api_key` (lowercase, underscored) — FastAPI converts between the two naming conventions for you, since real HTTP headers traditionally use hyphens and Python names can't. `str | None` is a type hint meaning "a string, or `None`" — the modern shorthand for what doc 02 would have written as `Optional[str]`. The body is two plain `if` checks, each raising `HTTPException` with a 401 status when something's wrong, and `return x_api_key` at the end hands back the validated key string if both checks pass — that return value only matters when this dependency is used per-route rather than router-wide (see section 6).
+
+`def get_account_or_404(account_id: int) -> dict:` takes `account_id` as its only parameter, with no `Query`/`Header` wrapper around it — a bare `int` parameter like this is exactly what tells FastAPI "pull this one from the URL path," the same rule doc 01 already established for route functions themselves. The first line inside the function, `from app.routers.accounts import accounts`, is an import written *inside* the function body instead of up at the top of the file with the others — that's not a style choice, it's required here. `accounts.py` already imports things from this very `dependencies.py` file at its own top (`from app.dependencies import ...`), so if `dependencies.py` also tried to import from `accounts.py` at its own top, Python would hit a circular import — each file waiting on the other to finish loading before it can finish loading itself. This was confirmed for real rather than assumed: writing that same import at the top of this file produces `ImportError: cannot import name 'accounts' from partially initialized module 'app.routers.accounts' (most likely due to a circular import)`. Moving the import inside the function delays it until the function is actually *called*, by which point both files have already finished loading — the circular dependency never actually gets hit.
+
+`class Pagination:` is an ordinary Python class — not a Pydantic `BaseModel` like every class in doc 02. There's no validation happening inside this class at all; `__init__(self, skip: int = 0, limit: int = Query(default=10, le=100))` just stores whatever two numbers it's given as `self.skip` and `self.limit`. The real validation (`le=100`) is still genuinely happening — it's just the `Query(...)` default FastAPI resolves *before* this `__init__` ever runs, not something the class itself checks.
+
+`def count_call() -> int:` increments `call_count["n"]` and returns the new value — nothing else to it. This whole function exists purely to make section 8's dependency-caching demo visible.
+
+`def get_db():` is written with `yield` instead of `return` — the same generator syntax as any other Python generator function, just put to a new use here. `db_log.append("OPEN session")` runs first; `yield session` is the point where this function pauses and hands `session` over to whatever called it (the route); and everything in the `finally` block runs only after the route is completely done with it — guaranteed, even if the route raises an exception along the way (full mechanics in section 5).
+
+**In `app/routers/accounts.py`:**
+
+`from fastapi import APIRouter, Depends` — these are the two central new names this whole doc is built around. `APIRouter` is the class you instantiate to get a "drawer" object (section 1); `Depends` is the function you wrap around another function or class to tell FastAPI "resolve this first, then hand me the result."
+
+`from app.dependencies import Pagination, count_call, get_account_or_404, get_db` pulls four specific names in from the other file — the same `from <module> import <names>` syntax already used for `fastapi`/`pydantic`, just now pointed at this project's own file instead of an installed library.
+
+`router = APIRouter(prefix="/accounts", tags=["accounts"])` is the actual line that creates this file's "drawer." Every `@router...` decorator below this line registers a route onto this one object — not onto the real `app`, which doesn't even exist in this file.
+
+`accounts: dict[...] = {...}` and `next_id` are the same in-memory storage pattern from doc 01/02, just living in this file now instead of a single shared `main.py`.
+
+`@router.get("", response_model=list[AccountOut])` — the decorator is `@router.get`, not `@app.get`, because this route belongs to the router, not the app directly. The path is just `""`, an empty string, because `prefix="/accounts"` already supplies the `/accounts` part — once this router is included into the real app, this becomes `GET /accounts`. `response_model=list[AccountOut]` is new syntax: doc 02 showed `response_model=AccountOut` for one object, and `list[AccountOut]` is the same idea for "a list of that shape" — every item in whatever this route returns gets validated and filtered through `AccountOut`, one at a time.
+
+`def list_accounts(pagination: Pagination = Depends()):` is the actual, literal syntax `Depends()` uses. Writing `Depends()` (or `Depends(Pagination)`, see section 4) as a parameter's default value is what tells FastAPI: "before running `list_accounts`, go build a `Pagination` object first, using whatever `Pagination.__init__` needs from the request, and hand me that finished object as `pagination`." Nothing about the word `Depends` is special Python syntax on its own — it's an ordinary function call, used in a spot (a parameter's default value) where FastAPI specifically goes looking for it.
+
+The `_dependency_cache_demo` route is explained by its own code comment and by section 8 further down — its only job is to make dependency caching visible.
+
+`@router.get("/{account_id}", response_model=AccountOut)` / `def get_account(account: dict = Depends(get_account_or_404)):` — the same `Depends(...)` syntax, this time wrapped around a plain function instead of a class. `account_id` never appears anywhere in `get_account`'s own parameter list — FastAPI sees that `get_account_or_404` (the function `Depends()` points at) needs an `account_id` parameter, and pulls that straight from this route's own URL path (`/{account_id}`) to satisfy it, before ever calling `get_account` itself (full mechanics in section 3).
+
+`@router.post("", status_code=201, response_model=AccountOut)` / `def create_account(account: AccountIn, db: dict = Depends(get_db)):` — `account: AccountIn` is the same request-body pattern from doc 02; `db: dict = Depends(get_db)` is new. Because `get_db` is written with `yield`, FastAPI runs its setup code, hands this route the yielded `session` dict as `db`, and only runs `get_db`'s teardown code once this whole function has returned (section 5).
+
+`update_balance` stacks two `Depends(...)` calls in one signature — `get_account_or_404` and `get_db` both run, independently, before the function body ever executes.
+
+**In `app/routers/transfers.py`:**
+
+`from app.routers.accounts import accounts` reaches into the *other* router file and imports its `accounts` dict directly. This works, and genuinely matters, because Python only loads a module's code once and reuses that same loaded result everywhere it's imported — `accounts.py`'s `accounts` dict is one single dict object, and `transfers.py` importing it here gets a reference to that exact same dict, not a separate copy. That's why a transfer processed through this file is immediately visible if you then call a `GET /accounts/{account_id}` route defined in the other file.
+
+`router = APIRouter(prefix="/transfers", tags=["transfers"], dependencies=[Depends(verify_api_key)])` — the new piece here is `dependencies=[Depends(verify_api_key)]`, passed directly into the `APIRouter(...)` constructor instead of onto one specific route. This is what makes `verify_api_key` run before *every single route* registered on this router, without any of those routes mentioning it themselves (full mechanics in section 6).
+
+`TransferRequest` and its `@model_validator` are unchanged from doc 02 — just relocated into this file, since this is where the transfer route itself now lives.
+
+`create_transfer` is an ordinary route with one `Depends(get_db)` of its own, on top of whatever `verify_api_key` already enforced at the router level before this function was ever reached.
+
+**In `app/main.py`:**
+
+`from app.routers import accounts, transfers` imports the two *modules themselves* — not specific functions or classes out of them, unlike every other import in this doc. This is what makes `accounts.router` and `transfers.router` (used on the next two lines) valid: `accounts` here refers to the whole `accounts.py` file, and `.router` reaches the one router object defined inside it.
+
+`app.include_router(accounts.router)` and `app.include_router(transfers.router)` are the two lines that actually make everything above this point real. Up until this call, `accounts.router` and `transfers.router` are just router objects sitting in their own files, entirely disconnected from the live `app` — `include_router(...)` is what copies every route already registered on that router onto the real `app`, applying that router's own `prefix` and `tags` along the way. Nothing in `accounts.py` or `transfers.py` is reachable over HTTP until these two lines run.
 
 ## 3. Function dependencies that read the path — `get_account_or_404`
 
